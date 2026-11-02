@@ -175,7 +175,7 @@ def video_codec(path):
             capture_output=True, text=True)
     except FileNotFoundError:  # ffprobe not installed yet (first deploy)
         return ""
-    return out.stdout.strip()
+    return out.stdout.strip().split(",")[0]  # some files add empty csv columns ("h264,")
 
 
 def label(url):

@@ -14,7 +14,7 @@ echo "== Config for $(hostname)"
 python3 "$K/kiosk.py" check
 
 echo "== Packages"
-pkgs=(labwc chromium kanshi wlr-randr grim mpv ffmpeg)
+pkgs=(labwc chromium kanshi wlr-randr grim mpv ffmpeg python3-websockets)
 missing=()
 for p in "${pkgs[@]}"; do dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p"); done
 if ((${#missing[@]})); then

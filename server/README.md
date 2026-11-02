@@ -8,7 +8,8 @@ phones, so the team can control the booth screens without Tailscale.
   waiting). The server can never reach the Pis.
 - The phones open the control page from the server and send their commands to it; the server hands
   each command to the right Pi on its next sync and returns the Pi's answer (or 504 after 15 s).
-- No WebSocket: plain HTTPS polling, about one request every 2 s per Pi.
+- Pis and phones that can keep a WebSocket open use it instead (see [WebSocket](#websocket)),
+  so commands and previews arrive at once. The polling above keeps working as the fallback.
 - One Python file, standard library only. Everything is kept in memory and nothing needs keeping:
   after a restart the Pis reconnect within seconds.
 
@@ -27,6 +28,8 @@ split of paths between 18080 and 18081 works.
 | `GET /` | phones: the control page | none (the page asks for the access code) |
 | `GET /api/state`, `/api/pi/<host>/...` | phones: state, previews, commands | header `X-Code` = `ACCESS_CODE` |
 | `POST /pi/sync` | the Pis | header `X-Pi-Key` = `PI_KEY` |
+| `GET /pi/ws` (WebSocket) | the Pis | header `X-Pi-Key` = `PI_KEY`, checked before the upgrade |
+| `GET /ws/phone` (WebSocket) | phones | the `ACCESS_CODE` in the first message (never in the URL) |
 
 The app does not check the lab tokens; edge1 does (below). It never logs a code, key or token.
 Wrong codes and keys are answered with 403 after a 1 s delay, and logged with the client address.
@@ -58,7 +61,33 @@ If `ACCESS_CODE` or `PI_KEY` is missing or too short, the app prints why and exi
   `https://kleros-devcon-screens-manager.labs.accesoprohibido.com/?lab_token=<phone token>`.
 - Upstream read timeout: at least 20 s (a phone command can wait up to 15 s for a Pi's answer).
 - Request bodies: a Pi sync is at most 4 MB (normally under 100 KB); a phone command at most 4 KB.
-- `/ws/` is not used (no WebSocket).
+- WebSocket upgrades on `/pi/ws` (Pi host) and `/ws/phone` (phone host): please keep forwarding
+  `Upgrade` and `Connection`. The 60 s idle timeout is fine (see below).
+
+## WebSocket
+
+Plain `ws://` inside (edge1 does TLS, so the Pis and phones use `wss://`). Both paths are on the
+same app and port as everything else.
+
+| Path | Who | Auth |
+|---|---|---|
+| `/pi/ws` | the Pis | `X-Pi-Key` header on the upgrade request. Wrong or missing: 403 `{"error": "wrong Pi key"}` after 1 s, no upgrade. The Pi's first message names it (`hello`). |
+| `/ws/phone?lab_token=<phone token>` | phones | `lab_token` is for edge1 only. The access code is the first message, so it never shows up in proxy logs. Wrong code: an error message after 1 s, then close code 4003. |
+
+- A plain `GET` (no upgrade) on these paths answers 426 with a JSON error.
+- The server pings every connection every **20 s** and closes one that has sent nothing (not
+  even a pong) for **50 s**. That keeps edge1's 60 s idle timeout from cutting live connections.
+- The first message (the Pi's `hello`, the phone's `auth`) must arrive within 10 s.
+- Frame limits: text messages at most 256 KB (state is ~2–5 KB), binary previews at most 1 MB
+  (normally 20–40 KB). Bigger ones are closed with code 1009.
+- A slow phone only ever misses previews (only the newest one per screen is kept for it); it
+  never holds up a Pi.
+- The polling paths (`/pi/sync`, `/api/...`) are unchanged and stay the fallback: a Pi or
+  phone that can't open a WebSocket keeps working as before, and both kinds can be connected
+  at the same time.
+- Log lines: `kleros1 WebSocket connected (from <address>)` / `... disconnected (from <address>): <why>`,
+  `phone WebSocket connected` / `disconnected`, and commands as usual with ` (ws)` at the end
+  when they came over a phone WebSocket. Never a code, key or token.
 
 ## First start
 
@@ -84,8 +113,8 @@ The app keeps nothing on disk, so `./data` stays empty.
 
 The container runs as `APP_UID:APP_GID` with a read-only file system, all capabilities dropped and
 `no-new-privileges`. Logs go to stdout. The log shows start-up (port and `PIS`), each Pi coming
-online or going offline, each relayed command (`kleros1 screen 0: next (from <address>)`) and
-wrong codes or keys.
+online or going offline, each relayed command (`kleros1 screen 0: next (from <address>)`),
+WebSocket connections and wrong codes or keys.
 
 ## Run it locally (laptop)
 

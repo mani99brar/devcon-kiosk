@@ -2,38 +2,156 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Kiosk control</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#130e24">
+<title>Kleros booth screens</title>
 <style>
-  body { margin: 0; padding: 16px; background: #111; color: #eee; font: 18px system-ui, sans-serif; }
-  h1 { font-size: 22px; margin: 24px 0 4px; }
-  h1:first-of-type { margin-top: 0; }
-  h2 { font-size: 18px; margin: 16px 0 4px; }
-  .now { color: #aaa; margin: 0 0 8px; }
-  button { font: inherit; padding: 14px; border: 0; border-radius: 10px; background: #333; color: #eee; }
-  button:active { background: #555; }
-  .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
-  .add { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .site { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin: 6px 0; }
-  .site button:first-child { text-align: left; overflow-wrap: anywhere; }
-  .on { background: #1f7a4d; color: #fff; }
-  input { font: inherit; padding: 12px; width: 100%; box-sizing: border-box; margin: 12px 0 8px; border-radius: 10px; border: 0; }
-  .err { color: #f77; }
-  .off { color: #f77; margin: 0 0 8px; }
-  .shot { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 10px; margin: 0 0 10px; object-fit: contain; }
-  .temp { background: #7a5a1f; color: #fff; text-align: left; width: 100%; margin: 6px 0; }
+  :root {
+    color-scheme: dark;
+    --bg: #130e24; --card: #1d1636; --well: #251d44; --btn: #2e2554; --press: #43377a; --line: #3d3369;
+    --field: #0e0a1c; --text: #f5f2ff; --dim: #b9b0d9; --brand: #9b6bff; --brand-strong: #6f2cff;
+    --focus: #d9c8ff; --live: #3ddc97; --amber: #ffb648; --amber-ink: #2b1a00; --red: #ff8595;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--text); -webkit-text-size-adjust: 100%;
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; }
+  button { font: inherit; font-weight: 600; color: var(--text); background: var(--btn); border: 1px solid var(--line);
+    border-radius: 12px; min-height: 48px; padding: 0 12px; display: inline-flex; align-items: center;
+    justify-content: center; gap: 8px; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+    transition: transform .08s, background-color .08s; }
+  button:active { background: var(--press); transform: scale(.97); }
+  button.busy { cursor: progress; opacity: .75; box-shadow: inset 0 -4px 0 var(--focus); animation: busy .8s ease-in-out infinite alternate; }
+  @keyframes busy { to { box-shadow: inset 0 -4px 0 transparent; } }
+  button:focus-visible, input:focus-visible, .frame:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  input { font: inherit; font-size: 16px; width: 100%; min-height: 48px; padding: 0 14px; border-radius: 12px;
+    border: 1px solid #7d70bb; background: var(--field); color: var(--text); }
+  input::placeholder { color: #9d94c2; }
+  .ic { display: inline-flex; flex: none; }
+  .ic svg { width: 22px; height: 22px; }
+  .ic .f { fill: currentColor; }
+  .ic .s { fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+  .top { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 12px;
+    padding: max(10px, env(safe-area-inset-top)) 16px 10px; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 8px; margin-right: auto; font-size: 22px; font-weight: 800; letter-spacing: -.03em; }
+  .brand svg { width: 26px; height: 26px; }
+  .brand small { font-size: 15px; font-weight: 500; letter-spacing: 0; color: var(--dim); }
+  .conn { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; color: var(--dim); white-space: nowrap; }
+  .conn::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--dim); }
+  .conn[data-kind=live] { color: var(--text); }
+  .conn[data-kind=live]::before { background: var(--live); box-shadow: 0 0 0 3px rgb(61 220 151 / .25); }
+  .conn[data-kind=poll]::before { background: var(--amber); }
+  .conn[data-kind=retry]::before { background: var(--red); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .3; } }
+  .ghost { min-height: 40px; background: transparent; font-size: 14px; }
+
+  main { padding-bottom: 120px; }
+  #hosts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding-top: 12px; }
+  .card { background: var(--card); padding-bottom: 16px; }
+  .head { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px 12px; }
+  .titles { flex: 1; min-width: 0; }
+  .name { margin: 0; font-size: 23px; line-height: 1.15; letter-spacing: -.01em; }
+  .now { margin: 4px 0 0; color: var(--dim); font-size: 15px; overflow-wrap: anywhere; }
+  .pill { flex: none; margin-top: 2px; padding: 5px 11px; border-radius: 999px; font-size: 13px; font-weight: 700;
+    background: var(--well); color: var(--dim); }
+  [data-state=rotating] .pill { background: rgb(155 107 255 / .22); color: #e0d2ff; }
+  [data-state=paused] .pill, [data-state=temp] .pill { background: var(--amber); color: var(--amber-ink); }
+  [data-state=offline] .pill { background: rgb(255 133 149 / .16); color: var(--red); }
+
+  .frame { position: relative; box-sizing: content-box; aspect-ratio: 16 / 9; background: #000; overflow: hidden; cursor: crosshair;
+    touch-action: manipulation; border-bottom: 4px solid var(--line); }
+  [data-state=rotating] .frame { border-color: var(--brand); }
+  [data-state=paused] .frame, [data-state=temp] .frame { border-color: var(--amber); }
+  .frame::before { content: "No picture yet"; position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--dim); font-size: 14px; }
+  .shot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .shot:not([src]) { visibility: hidden; }
+  .ripple { position: absolute; width: 56px; height: 56px; margin: -28px 0 0 -28px; border-radius: 50%;
+    border: 3px solid #fff; background: rgb(111 44 255 / .35); box-shadow: 0 0 0 2px rgb(19 14 36 / .85); pointer-events: none;
+    animation: ripple .65s ease-out forwards; }
+  @keyframes ripple { from { transform: scale(.3); opacity: 1; } to { transform: scale(1.4); opacity: 0; } }
+
+  .bar { display: flex; width: calc(100% - 24px); margin: 12px 12px 0; padding: 12px 14px; justify-content: flex-start;
+    text-align: left; background: var(--amber); color: var(--amber-ink); border: 0; font-weight: 700; }
+  .bar:active { background: #ffc978; }
+  .primary { display: grid; grid-template-columns: 1fr 1.25fr 1fr; gap: 8px; padding: 12px 12px 0; }
+  .primary button { min-height: 58px; font-size: 17px; }
+  .primary .main { background: var(--brand-strong); border-color: transparent; color: #fff; }
+  .primary .main:active { background: #8247ff; }
+  .browse { display: grid; gap: 8px; margin: 12px 12px 0; padding: 12px; border-radius: 14px; background: var(--well); }
+  .hint { margin: 0; font-size: 14px; color: var(--dim); }
+  .nav { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .scroll { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .nav button, .scroll button { flex-direction: column; gap: 2px; min-height: 58px; padding: 6px 4px; font-size: 14px; }
+  .typing { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+  .typing button { font-size: 15px; }
+  .link { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 12px 0; }
+  .link input { grid-column: 1 / -1; }
+  .sites { list-style: none; display: grid; gap: 6px; margin: 12px 12px 0; padding: 0; }
+  .site { display: grid; grid-template-columns: 1fr 48px; gap: 6px; }
+  .jump { justify-content: space-between; padding: 10px 14px; text-align: left; overflow-wrap: anywhere; font-weight: 500; }
+  .site.on .jump { background: rgb(155 107 255 / .2); border-color: var(--brand); font-weight: 700; }
+  .tag { flex: none; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; background: var(--brand-strong); color: #fff; }
+  .rm { padding: 0; color: var(--dim); }
+  .gone .off { margin: 0 16px; font-size: 18px; font-weight: 600; }
+  .gone .hint { margin: 6px 16px 0; }
+
+  .toast { position: fixed; left: 12px; right: 12px; bottom: max(16px, env(safe-area-inset-bottom)); z-index: 5;
+    max-width: 520px; margin: 0 auto; padding: 14px 16px; border-radius: 14px; background: #3d1426;
+    border: 1px solid var(--red); color: #ffe6ea; font-weight: 600; box-shadow: 0 12px 32px rgb(0 0 0 / .5);
+    visibility: hidden; opacity: 0; transform: translateY(10px); transition: opacity .15s, transform .15s, visibility .15s; }
+  .toast.show { visibility: visible; opacity: 1; transform: none; }
+
+  .login { display: grid; gap: 12px; max-width: 420px; margin: 0 auto; padding: 40px 20px; }
+  .login h1 { margin: 0 0 4px; font-size: 28px; line-height: 1.15; letter-spacing: -.02em; }
+  .login p { margin: 0; color: var(--dim); }
+  .login label { margin-top: 8px; font-weight: 600; }
+  .login .cta { background: var(--brand-strong); border-color: transparent; color: #fff; min-height: 52px; }
+  .login .err { color: var(--red); font-weight: 600; min-height: 1.4em; }
+
+  @media (max-width: 420px) { .brand small { display: none; } }
+  @media (max-width: 359px) {
+    .top { gap: 8px; padding-left: 12px; padding-right: 12px; }
+    .primary { gap: 6px; }
+    .primary button, .typing button { padding: 0 8px; gap: 6px; }
+  }
+  @media (min-width: 600px) {
+    #hosts { padding: 16px 16px 0; }
+    .card { border-radius: 18px; overflow: hidden; }
+  }
+  @media (min-width: 960px) {
+    #hosts { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; max-width: 1500px; margin: 0 auto; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before { animation: none !important; transition: none !important; }
+    .ripple { animation: fade .65s linear forwards !important; }
+    @keyframes fade { to { opacity: 0; } }
+  }
 </style>
 </head>
 <body>
-<form id="login" hidden>
-  <h1>Kiosk control</h1>
-  <label for="code">Access code</label>
-  <input id="code" autocomplete="off" autocapitalize="off" spellcheck="false">
-  <button>Unlock</button>
-  <p id="loginErr" class="err"></p>
-</form>
-<p id="err" class="err"></p>
-<div id="hosts"></div>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 27 9.5v13L16 29 5 22.5v-13z" fill="none" stroke="#9b6bff" stroke-width="2.6" stroke-linejoin="round"/><path d="M16 3v26M5 9.5l22 13M27 9.5l-22 13" stroke="#6f2cff" stroke-width="1.6"/></svg>
+    <span>kleros</span><small>Booth screens</small>
+  </div>
+  <span id="conn" class="conn" role="status" hidden></span>
+  <button id="logout" class="ghost" type="button" hidden>Log out</button>
+</header>
+<main>
+  <form id="login" class="login" hidden>
+    <h1>Control the booth TVs</h1>
+    <p>Change what the Kleros booth screens show, from this phone.</p>
+    <label for="code">Access code</label>
+    <input id="code" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+    <p>The code comes separately from the team link: in a DM, or ask at the booth. This phone remembers it.</p>
+    <button class="cta">Unlock</button>
+    <p id="loginErr" class="err" role="alert"></p>
+  </form>
+  <div id="hosts"></div>
+</main>
+<div id="toast" class="toast" role="alert"></div>
 <script>
   function load() { try { return localStorage.getItem("kioskCode") || ""; } catch (e) { return ""; } }
   function save(v) { try { v ? localStorage.setItem("kioskCode", v) : localStorage.removeItem("kioskCode"); } catch (e) {} }
@@ -49,8 +167,17 @@
     return url + (url.includes("?") ? "&" : "?") + "lab_token=" + encodeURIComponent(labToken);
   }
 
-  const inputs = {};  // kept across refreshes so a half-typed link survives
-  const shots = {};   // preview <img> per screen, also kept across refreshes
+  const $ = (id) => document.getElementById(id);
+  const cards = {};     // one per TV ("host/screen"), kept across refreshes so half-typed text and the preview survive
+  const offCards = {};  // "not connected" cards per host
+  const last = {};      // latest state per host, from either transport
+  let shown = [];       // the TV cards on the page now
+  // served by the relay server ("hub"): a WebSocket gets pushes and carries commands; until it is
+  // connected (or where WebSockets are blocked) the page polls over HTTP every 3 s as before
+  let ws = null, live = false, retry = 1, retryTimer = 0, seq = 0;
+  let pis = new Map();         // host -> {online, state}, from the WebSocket
+  const pending = new Map();   // command id -> {done, fail, timer}
+  const watching = new Set();  // "host/screen" previews asked for on the WebSocket
 
   async function api(base, path, method = "GET", body) {
     const opts = { method, headers: { "X-Code": code } };
@@ -65,18 +192,42 @@
   }
 
   function showLogin(msg) {
-    document.getElementById("login").hidden = false;
-    document.getElementById("hosts").replaceChildren();
-    document.getElementById("loginErr").textContent = msg || "";
+    disconnect();
+    $("login").hidden = false;
+    $("hosts").replaceChildren();
+    $("loginErr").textContent = msg || "";
+    $("logout").hidden = true;
+    setConn("");
   }
 
-  document.getElementById("login").addEventListener("submit", (e) => {
+  $("login").addEventListener("submit", (e) => {
     e.preventDefault();
-    code = document.getElementById("code").value.trim();
+    code = $("code").value.trim();
     save(code);
-    document.getElementById("login").hidden = true;
+    $("login").hidden = true;
+    setConn("start");
     refresh();
   });
+  $("logout").onclick = () => { code = ""; save(""); showLogin(); };
+
+  const CONN = { start: "Connecting…", live: "Live", poll: "Updating every 3 s", retry: "Reconnecting…" };
+  function setConn(kind) {
+    const c = $("conn");
+    c.hidden = !kind;
+    c.dataset.kind = kind;
+    set(c, CONN[kind] || "");
+  }
+
+  let toastTimer = 0;
+  function toast(msg) {
+    const t = $("toast");
+    clearTimeout(toastTimer);
+    if (!msg) return t.classList.remove("show");
+    t.textContent = msg;
+    t.classList.add("show");
+    toastTimer = setTimeout(() => t.classList.remove("show"), 6000);
+  }
+  $("toast").onclick = () => toast("");
 
   function el(tag, text, cls) {
     const n = document.createElement(tag);
@@ -84,57 +235,216 @@
     if (cls) n.className = cls;
     return n;
   }
+  function set(n, text) { if (n.textContent !== text) n.textContent = text; }
 
-  function renderHost(root, base, state) {
-    root.append(el("h1", state.host));
-    for (const s of state.screens) {
-      const send = (action, opts = {}) =>
-        api(base, `/api/screen/${s.index}/${action}` + (opts.site === undefined ? "" : `?site=${opts.site}`),
-            "POST", opts.url === undefined ? undefined : { url: opts.url })
-          .then(() => { document.getElementById("err").textContent = ""; return refresh(true); })
-          .catch((e) => { if (e.message !== "code") document.getElementById("err").textContent = `${state.host}: ${e.message}`; });
-      if (state.screens.length > 1) root.append(el("h2", `Screen ${s.index + 1} (${s.output})`));
-      const now = !s.ready ? "Starting…" : s.temp ? `Showing ${s.temp} (not in the rotation)`
-        : `${s.paused ? "Paused on" : "Showing"} ${s.sites[s.current]}`;
-      root.append(el("p", now, "now"));
+  const ICONS = { prev: "fM6 5h2.5v14H6zM20 5v14L9.5 12z", next: "fM15.5 5H18v14h-2.5zM4 5v14l10.5-7z",
+    pause: "fM6.5 5h4v14h-4zM13.5 5h4v14h-4z", play: "fM7 4.5v15L19.5 12z", back: "sM19 12H5M11 6l-6 6 6 6",
+    forward: "sM5 12h14M13 6l6 6-6 6", reload: "sM20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7", up: "sM12 19V5M6 11l6-6 6 6",
+    down: "sM12 5v14M6 13l6 6 6-6", enter: "sM20 5v7a3 3 0 0 1-3 3H5M9 11l-4 4 4 4", x: "sM6 6l12 12M18 6 6 18" };
+  function icon(name) {
+    const n = el("span", "", "ic");
+    n.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path class="${ICONS[name][0]}" d="${ICONS[name].slice(1)}"/></svg>`;
+    return n;
+  }
+  function button(label, ic, cls) {
+    const b = el("button", "", cls);
+    b.type = "button";
+    if (ic) b.append(icon(ic));
+    b.append(el("span", label));
+    return b;
+  }
 
-      const key = `${state.host}/${s.index}`;
-      const shot = shots[key] ||= Object.assign(el("img", "", "shot"), { alt: `What ${state.host} shows now` });
-      root.append(shot);
-      updateShot(shot, base, s.index);
+  // a tapped control stays busy until the answer comes back; errors go to the toast
+  function act(btn, c, action, opts) {
+    if (btn.classList.contains("busy")) return Promise.resolve(false);
+    btn.classList.add("busy");
+    btn.setAttribute("aria-busy", "true");
+    return send(c, action, opts).then(() => { toast(""); return true; },
+      (e) => { if (e.message !== "code") toast(`${c.host}: ${e.message}`); return false; })
+      .finally(() => { btn.classList.remove("busy"); btn.removeAttribute("aria-busy"); });
+  }
 
-      const row = el("div", "", "row");
-      const prev = el("button", "◀ Prev"), pause = el("button", s.paused ? "▶ Resume" : "❚❚ Pause"), next = el("button", "Next ▶");
-      prev.onclick = () => send("prev");
-      pause.onclick = () => send(s.paused ? "resume" : "pause");
-      next.onclick = () => send("next");
-      row.append(prev, pause, next);
-      root.append(row);
+  function send(c, action, { site, body } = {}) {
+    const path = `/api/screen/${c.s.index}/${action}`, query = site === undefined ? "" : `site=${site}`;
+    if (live) return command(c.host, path, query, body);
+    return api(c.base, path + (query && `?${query}`), "POST", body).then(() => { refresh(); });
+  }
 
-      const input = inputs[key] ||= Object.assign(el("input"), { type: "url", placeholder: "Paste a link, e.g. court.kleros.io" });
-      const add = el("div", "", "add");
-      const showNow = el("button", "Show now"), keep = el("button", "Add to rotation");
-      showNow.onclick = () => input.value.trim() && send("show", { url: input.value }).then(() => { input.value = ""; });
-      keep.onclick = () => input.value.trim() && send("add", { url: input.value }).then(() => { input.value = ""; });
-      add.append(showNow, keep);
-      root.append(input, add);
+  function command(host, path, query, body) {
+    return new Promise((resolve, reject) => {
+      const id = Date.now().toString(36) + "-" + ++seq;
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error("didn't answer")); }, 20000);
+      pending.set(id, { timer, fail: reject, done: (m) => {
+        if (m.status !== 200) return reject(new Error((m.body && m.body.error) || `error ${m.status}`));
+        if (m.body && m.body.screens) { pis.set(host, { online: true, state: m.body }); draw(); }
+        resolve(m.body);
+      } });
+      try { ws.send(JSON.stringify({ type: "command", id, host, path, query, body: body ?? null })); }
+      catch (e) { clearTimeout(timer); pending.delete(id); reject(new Error("connection lost, try again")); }
+    });
+  }
 
-      if (s.temp) {
-        const t = el("button", `${s.temp}: showing now, not saved (tap Resume to go back)`, "temp");
-        t.onclick = () => send("resume");
-        root.append(t);
-      }
-      s.sites.forEach((name, i) => {
-        const line = el("div", "", "site");
-        const jump = el("button", name, i === s.current && !s.temp ? "on" : "");
-        jump.onclick = () => send("jump", { site: i });
-        const remove = el("button", "✕");
-        remove.setAttribute("aria-label", `Remove ${name}`);
-        remove.onclick = () => confirm(`Remove ${name} from ${state.host}'s rotation?`) && send("remove", { url: s.urls[i] });
-        line.append(jump, remove);
-        root.append(line);
-      });
+  function makeCard(host, index) {
+    const c = { root: el("section", "", "card") };
+    const head = el("div", "", "head"), titles = el("div", "", "titles");
+    c.name = el("h2", "", "name");
+    c.now = el("p", "", "now");
+    c.pill = el("span", "", "pill");
+    c.pill.setAttribute("role", "status");
+    titles.append(c.name, c.now);
+    head.append(titles, c.pill);
+
+    c.frame = el("div", "", "frame");
+    c.img = el("img", "", "shot");
+    c.img.alt = `What ${host} shows now. Tap the picture to click there on the TV.`;
+    c.img.onclick = (e) => tap(c, e);
+    c.frame.append(c.img);
+
+    c.bar = el("button", "", "bar");
+    c.bar.type = "button";
+    c.bar.onclick = () => act(c.bar, c, "resume");
+
+    const primary = el("div", "", "primary");
+    c.prev = button("Prev", "prev");
+    c.pause = button("Pause", "pause", "main");
+    c.next = button("Next", "next");
+    c.prev.onclick = () => act(c.prev, c, "prev");
+    c.pause.onclick = () => act(c.pause, c, c.s.paused ? "resume" : "pause");
+    c.next.onclick = () => act(c.next, c, "next");
+    primary.append(c.prev, c.pause, c.next);
+
+    const browse = el("div", "", "browse"), nav = el("div", "", "nav"), scroll = el("div", "", "scroll");
+    for (const [label, action] of [["Back", "back"], ["Forward", "forward"], ["Reload", "reload"]]) {
+      const b = button(label, action);
+      b.onclick = () => act(b, c, action);
+      nav.append(b);
     }
+    for (const [label, ic, dy] of [["Scroll up", "up", -0.5], ["Scroll down", "down", 0.5]]) {
+      const b = button(label, ic);
+      b.onclick = () => act(b, c, "scroll", { body: { dy } });
+      scroll.append(b);
+    }
+    const typing = el("div", "", "typing");
+    c.text = Object.assign(el("input"), { type: "text", maxLength: 500, autocomplete: "off", placeholder: "Text for the TV" });
+    c.text.setAttribute("aria-label", `Text to type on ${host}`);
+    c.text.setAttribute("autocapitalize", "off");
+    c.text.setAttribute("enterkeyhint", "send");
+    c.text.spellcheck = false;
+    const typeBtn = button("Type"), enter = button("Enter", "enter");
+    const typeIt = () => c.text.value && act(typeBtn, c, "type", { body: { text: c.text.value } })
+      .then((ok) => { if (ok) c.text.value = ""; });
+    typeBtn.onclick = typeIt;
+    c.text.onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); typeIt(); } };
+    enter.onclick = () => act(enter, c, "key", { body: { key: "Enter" } });
+    typing.append(c.text, typeBtn, enter);
+    browse.append(el("p", "Tap the picture to click there on the TV.", "hint"), nav, scroll, typing);
+
+    const link = el("div", "", "link");
+    c.link = Object.assign(el("input"), { type: "url", placeholder: "Paste a link, e.g. court.kleros.io" });
+    c.link.setAttribute("aria-label", `Link for ${host}`);
+    const showNow = button("Show now"), keep = button("Add to rotation");
+    showNow.onclick = () => c.link.value.trim() && act(showNow, c, "show", { body: { url: c.link.value } })
+      .then((ok) => { if (ok) c.link.value = ""; });
+    keep.onclick = () => c.link.value.trim() && act(keep, c, "add", { body: { url: c.link.value } })
+      .then((ok) => { if (ok) c.link.value = ""; });
+    link.append(c.link, showNow, keep);
+
+    c.sites = el("ul", "", "sites");
+    c.root.append(head, c.frame, c.bar, primary, browse, link, c.sites);
+    return c;
+  }
+
+  function fill(c, base, host, s, many) {
+    c.base = base; c.host = host; c.s = s;  // what the controls act on
+    const site = s.sites[s.current];
+    const kind = !s.ready ? "starting" : s.temp ? "temp" : s.paused ? "paused" : "rotating";
+    c.root.dataset.state = kind;
+    set(c.name, many ? `${host}, screen ${s.index + 1}` : host);
+    set(c.now, !s.ready ? "Starting…" : s.temp ? `Showing ${s.temp} (not in the rotation)`
+      : `${s.paused ? "Paused on" : "Showing"} ${site}`);
+    set(c.pill, { starting: "Starting", temp: "Showing a link", paused: "Paused", rotating: "Rotating" }[kind]);
+    c.bar.hidden = kind !== "temp" && kind !== "paused";
+    set(c.bar, s.temp ? "Not saved. Tap to go back to the rotation." : "Rotation paused. Tap to resume.");
+    if (c.pause.dataset.paused !== String(s.paused)) {
+      c.pause.dataset.paused = String(s.paused);
+      c.pause.replaceChildren(icon(s.paused ? "play" : "pause"), el("span", s.paused ? "Resume" : "Pause"));
+    }
+    const sig = JSON.stringify([s.sites, s.urls, s.current, s.temp]);
+    if (c.sig === sig) return;
+    c.sig = sig;
+    c.sites.replaceChildren(...s.sites.map((name, i) => {
+      const on = i === s.current && !s.temp;
+      const li = el("li", "", on ? "site on" : "site");
+      const jump = el("button", "", "jump");
+      jump.type = "button";
+      jump.append(el("span", name));
+      if (on) { jump.append(el("span", "On now", "tag")); jump.setAttribute("aria-current", "true"); }
+      jump.onclick = () => act(jump, c, "jump", { site: i });
+      const remove = button("", "x", "rm");
+      remove.setAttribute("aria-label", `Remove ${name}`);
+      remove.onclick = () => confirm(`Remove ${name} from ${host}'s rotation?`) && act(remove, c, "remove", { body: { url: s.urls[i] } });
+      li.append(jump, remove);
+      return li;
+    }));
+  }
+
+  function offCard(name, waiting) {
+    const c = offCards[name] ||= (() => {
+      const o = { root: el("section", "", "card gone"), name: el("h2", "", "name"), msg: el("p", "", "off") };
+      const head = el("div", "", "head"), titles = el("div", "", "titles"), pill = el("span", "Offline", "pill");
+      o.root.dataset.state = "offline";
+      titles.append(o.name);
+      head.append(titles, pill);
+      o.root.append(head, o.msg, el("p", "It comes back here by itself. If it doesn't within a minute, check the Pi's power and network.", "hint"));
+      return o;
+    })();
+    set(c.name, name);
+    set(c.msg, waiting ? `Waiting for ${name}…` : `${name} is not connected`);
+    return c.root;
+  }
+
+  // entries: [{base, name, state, online}], state null when that Pi is offline
+  function render(entries) {
+    const nodes = [], seen = new Set();
+    shown = [];
+    for (const { base, name, state, online } of entries) {
+      if (!state) { nodes.push(offCard(name, online)); continue; }
+      if (seen.has(state.host)) continue;
+      seen.add(state.host);
+      last[state.host] = state;
+      for (const s of state.screens) {
+        const c = cards[`${state.host}/${s.index}`] ||= makeCard(state.host, s.index);
+        fill(c, base, state.host, s, state.screens.length > 1);
+        nodes.push(c.root);
+        shown.push(c);
+      }
+    }
+    // only move cards when the set changes: moving a card would close the keyboard of someone typing in it
+    const root = $("hosts");
+    if (nodes.length !== root.children.length || nodes.some((n, i) => n !== root.children[i])) root.replaceChildren(...nodes);
+    $("logout").hidden = false;
+  }
+
+  // tap on the preview = click at that spot on the TV (x/y as fractions of the picture)
+  function tap(c, e) {
+    const r = c.img.getBoundingClientRect(), nw = c.img.naturalWidth, nh = c.img.naturalHeight;
+    if (!nw || !nh || !r.width || !r.height || c.frame.classList.contains("busy")) return;
+    const k = Math.min(r.width / nw, r.height / nh);  // object-fit: contain letterboxes a picture that isn't 16:9
+    const x = (e.clientX - r.left - (r.width - nw * k) / 2) / (nw * k);
+    const y = (e.clientY - r.top - (r.height - nh * k) / 2) / (nh * k);
+    if (x < 0 || x > 1 || y < 0 || y > 1) return;
+    const dot = el("span", "", "ripple");
+    dot.style.left = `${e.clientX - r.left}px`;
+    dot.style.top = `${e.clientY - r.top}px`;
+    c.frame.append(dot);
+    setTimeout(() => dot.remove(), 700);
+    act(c.frame, c, "click", { body: { x: +x.toFixed(4), y: +y.toFixed(4) } });
+  }
+
+  function setShot(img, blob) {
+    const old = img.src;
+    img.src = URL.createObjectURL(blob);
+    if (old.startsWith("blob:")) URL.revokeObjectURL(old);
   }
 
   async function updateShot(img, base, index) {
@@ -142,19 +452,15 @@
     try {
       const r = await fetch(withToken(`${base}/api/screen/${index}/shot.jpg`), { headers: { "X-Code": code } });
       if (!r.ok) return;
-      const old = img.src;
-      img.src = URL.createObjectURL(await r.blob());
-      if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+      setShot(img, await r.blob());
     } catch (e) {}
   }
 
-  async function refresh(force) {
+  async function refresh() {
     if (!code) return showLogin();
-    // don't redraw under someone typing a link
-    if (!force && document.activeElement && document.activeElement.tagName === "INPUT") return;
     let own;
     try { own = await api("", "/api/state"); } catch (e) {
-      if (e.message !== "code") document.getElementById("err").textContent = `Can't reach this Pi: ${e.message}`;
+      if (e.message !== "code") { toast(`Can't reach this Pi: ${e.message}`); if (!live) setConn("retry"); }
       return;
     }
     // served by the relay server ("hub"), every Pi goes through it; served by a Pi, the other
@@ -164,19 +470,109 @@
           .map((u) => ({ base: u, name: new URL(u).hostname.split(".")[0] }));
     const results = await Promise.all(others.map((o) =>
       api(o.base, "/api/state").then((st) => ({ ...o, state: st }), () => ({ ...o, state: null }))));
-    const root = document.getElementById("hosts");
-    root.replaceChildren();
-    const seen = new Set();
-    for (const { base, name, state } of own.hub ? results : [{ base: "", state: own }, ...results]) {
-      if (!state) { root.append(el("h1", name), el("p", "Not reachable right now", "off")); continue; }
-      if (seen.has(state.host)) continue;
-      seen.add(state.host);
-      renderHost(root, base, state);
+    if (live || !code) return;  // the WebSocket took over meanwhile, or logged out
+    setConn("poll");
+    render(own.hub ? results : [{ base: "", state: own }, ...results]);
+    for (const c of shown) updateShot(c.img, c.base, c.s.index);
+    if (own.hub) connect();
+  }
+
+  function connect() {
+    if (ws || retryTimer || !code || typeof WebSocket !== "function") return;
+    let sock;
+    try {
+      sock = ws = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${withToken("/ws/phone")}`);
+    } catch (e) { ws = null; return later(); }
+    sock.binaryType = "arraybuffer";
+    // the code goes in the first message, never in the URL (keeps it out of proxy logs)
+    sock.onopen = () => sock.send(JSON.stringify({ type: "auth", code }));
+    sock.onmessage = (e) => { if (ws === sock) message(e.data); };
+    sock.onclose = (e) => {
+      if (ws !== sock) return;
+      const was = live;
+      drop();
+      if (e.code === 4003) { code = ""; save(""); return showLogin("Wrong access code"); }
+      later();
+      if (was) { setConn("retry"); refresh(); }
+    };
+  }
+
+  function later() {
+    retryTimer = setTimeout(() => { retryTimer = 0; connect(); }, retry * 1000);
+    retry = Math.min(retry * 2, 30);
+  }
+
+  function drop() {
+    ws = null; live = false;
+    watching.clear();
+    for (const p of pending.values()) { clearTimeout(p.timer); p.fail(new Error("connection lost, check the TV before trying again")); }
+    pending.clear();
+  }
+
+  function disconnect() {
+    clearTimeout(retryTimer);
+    retryTimer = 0; retry = 1;
+    const sock = ws;
+    drop();
+    if (sock) sock.close();
+  }
+
+  function message(data) {
+    if (typeof data !== "string") return preview(data);
+    let m;
+    try { m = JSON.parse(data); } catch (e) { return; }
+    if (m.type === "hello") {
+      live = true; retry = 1;
+      setConn("live");
+      pis = new Map((m.pis || []).map((p) => [p.host, { online: p.online, state: p.online ? last[p.host] || null : null }]));
+      draw();
+    } else if (m.type === "error") {
+      if (m.error !== "wrong access code") toast(m.error);
+    } else if (!live) {
+      return;
+    } else if (m.type === "state") {
+      pis.set(m.host, { online: m.online, state: m.online ? m.state : null });
+      draw();
+    } else if (m.type === "result" && pending.has(m.id)) {
+      const p = pending.get(m.id);
+      pending.delete(m.id);
+      clearTimeout(p.timer);
+      p.done(m);
     }
   }
 
+  function draw() {
+    render([...pis.keys()].sort().map((host) => ({ base: `/api/pi/${host}`, name: host, ...pis.get(host) })));
+    watch();
+  }
+
+  // previews of the TVs on the page while the page is visible
+  function watch() {
+    const want = new Set(live && !document.hidden ? shown.map((c) => `${c.host}/${c.s.index}`) : []);
+    const say = (key, on) => {
+      const [host, screen] = key.split("/");
+      ws.send(JSON.stringify({ type: "watch", host, screen: +screen, on }));
+      on ? watching.add(key) : watching.delete(key);
+    };
+    for (const key of [...watching]) if (!want.has(key)) say(key, false);
+    for (const key of want) if (!watching.has(key)) say(key, true);
+  }
+
+  // binary frame: [n][host: n bytes][screen][JPEG]
+  function preview(data) {
+    const b = new Uint8Array(data), n = b[0];
+    const c = cards[`${String.fromCharCode(...b.subarray(1, 1 + n))}/${b[1 + n]}`];
+    if (c && b.length > n + 2) setShot(c.img, new Blob([b.subarray(n + 2)], { type: "image/jpeg" }));
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (live) watch();
+    else if (!document.hidden && code && $("login").hidden) refresh();
+  });
+
+  setConn("start");
   refresh();
-  setInterval(() => { if (code && document.getElementById("login").hidden) refresh(); }, 3000);
+  setInterval(() => { if (code && $("login").hidden && !live) refresh(); }, 3000);
 </script>
 </body>
 </html>

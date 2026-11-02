@@ -513,6 +513,40 @@ const cases = [
     phone.btn("Exit full screen").onclick();
     return noSwipe && esc && back && offline && iphone && !has(phone.card("kleros1"), "full");
   }],
+
+  // follow-up: close the tab a link opened
+  ["close tab: shown only while the Pi has a tab to close, in the card and in full screen; sends closetab; a refusal goes to the toast", TEAM, hub, async (r) => {
+    const ws = await r.live({ kleros1: st("kleros1") });
+    const card = r.card("kleros1");
+    const closer = () => r.btn("Close the tab on the TV"), dockCloser = () => r.btn("Close the tab on the TV (full screen)");
+    const push = (s) => { ws.push({ type: "state", host: "kleros1", online: true, state: st("kleros1", s) }); };
+    const answer = async (status, body) => { const c = r.commands().at(-1); ws.push({ type: "result", id: c.id, status, body }); await r.settle(); };
+    const none = closer().hidden && dockCloser().hidden;
+    push({ paused: true, closable: true, page: "court.example/cases/12" });
+    const shown = !closer().hidden && !dockCloser().hidden && text(closer()) === "Close tab"
+      && closer().parent === r.btn("Back").parent;  // with Back, Forward and Reload
+    closer().onclick();
+    await answer(200, st("kleros1", { paused: true, closable: true, page: "one.example" }));  // another tab underneath
+    const still = !closer().hidden;
+    r.btn("Full screen").onclick();
+    await r.settle();
+    dockCloser().onclick();
+    await answer(200, st("kleros1", { paused: true, closable: false, page: "a.example" }));
+    const gone = closer().hidden && dockCloser().hidden && has(card, "full");  // full screen stays on
+    push({ paused: true, closable: true });  // a stale button tapped after all: the Pi refuses
+    dockCloser().onclick();
+    await answer(409, { error: "this tab is a rotation site's, so it stays open" });
+    return none && shown && still && gone && r.els.toast.textContent === "kleros1: this tab is a rotation site's, so it stays open"
+      && same(r.commands().map((c) => [c.host, c.path, c.body]), Array(3).fill(["kleros1", "/api/screen/0/closetab", null]));
+  }],
+  ["close tab, Pi mode over HTTP: posts closetab with the code; a Pi that doesn't know it never shows the button", PI,
+    { ...pi, "/api/state": [200, JSON_TYPE, { ...st("kleros1", { paused: true, closable: true }), peers: [] }] }, async (r) => {
+    r.btn("Close the tab on the TV").onclick();
+    await r.settle();
+    const old = await boot(PI, { "/api/state": [200, JSON_TYPE, st("kleros1", { paused: true, temp: "x.example" })] });
+    return same(r.posts, [{ url: "/api/screen/0/closetab", body: undefined, code: "saved-code-0123456789" }])
+      && old.btn("Close the tab on the TV").hidden && old.btn("Close the tab on the TV (full screen)").hidden;
+  }],
 ];
 
 (async () => {

@@ -544,6 +544,102 @@ class NewTabs(PiTest):
         self.assertEqual(s.active_tab(), popup)
 
 
+class CloseTab(PiTest):
+    """Follow-up (2 Nov, DM 3287): the phone's Close tab closes the tab on screen that a link
+    (or Show now) opened, one at a time, back to the tab underneath; never a rotation site's tab."""
+    open_tab, follow = NewTabs.open_tab, NewTabs.follow
+    REFUSED = (409, {"error": "this tab is a rotation site's, so it stays open"})
+
+    def test_closes_the_newest_tab_back_to_the_one_underneath(self):
+        s = self.screen
+        self.assertFalse(s.state()["closable"])
+        self.run_command("click", {"x": 0.5, "y": 0.5})
+        first = self.open_tab("https://one.example/", "P1")
+        self.follow()
+        second = self.open_tab("https://two.example/", "P2")  # a link in the first one
+        self.follow()
+        self.assertTrue(s.state()["closable"])
+        self.assertEqual(self.run_command("closetab"), (200, None))
+        self.assertNotIn(second, self.chromium.tabs)
+        self.assertEqual((s.popups, s.showing, s.state()["page"], s.state()["closable"]),
+                         ([first], "https://one.example/", "one.example", True))
+        self.assertEqual(self.run_command("closetab"), (200, None))
+        self.assertNotIn(first, self.chromium.tabs)
+        self.assertEqual((s.popups, s.active_tab(), s.showing, s.state()["page"], s.state()["closable"]),
+                         ([], s.tabs[0], SITES[0], "example.org", False))
+        self.assertTrue(s.paused)  # still paused where the phone was browsing; Resume goes on
+        self.assertEqual(len(self.logged("control: closetab")), 2)
+
+    def test_a_tab_the_loop_has_not_seen_yet(self):
+        popup = self.open_tab("https://court.example/")  # no loop turn: closetab looks for itself
+        self.assertEqual(self.run_command("closetab"), (200, None))
+        self.assertNotIn(popup, self.chromium.tabs)
+        self.assertEqual(self.screen.showing, SITES[0])
+
+    def test_show_now_tab_back_to_the_rotation(self):
+        s = self.screen
+        self.run_command("show", {"url": "kleros.io"})
+        temp = s.temp[0]
+        popup = self.open_tab("https://court.example/")  # a link on the shown page
+        self.follow()
+        self.assertEqual(self.run_command("closetab"), (200, None))  # back to the shown page
+        self.assertEqual((self.chromium.tabs.get(popup), s.active_tab(), s.state()["closable"]), (None, temp, True))
+        self.assertEqual(self.run_command("closetab"), (200, None))  # back to the rotation's site
+        self.assertNotIn(temp, self.chromium.tabs)
+        self.assertEqual((s.temp, s.active_tab(), s.showing, s.paused, s.state()["closable"]),
+                         (None, s.tabs[0], SITES[0], True, False))
+        self.run_command("jump", query="site=1")  # Show now over a video, then Close tab: the video again
+        self.run_command("show", {"url": "kleros.io"})
+        self.assertEqual(self.run_command("closetab"), (200, None))
+        self.assertEqual((s.temp, s.showing, s.player is not None, s.state()["closable"]),
+                         (None, SITES[1], True, False))
+
+    def test_never_a_rotation_tab(self):
+        s = self.screen
+        rotation = dict(self.chromium.tabs)
+        self.assertEqual(self.run_command("closetab"), self.REFUSED)  # rotating
+        self.chromium.tabs[s.tabs[0]] = "https://example.org/cases/12"  # a link in the same tab: Back
+        self.assertEqual(self.run_command("closetab"), self.REFUSED)
+        self.run_command("jump", query="site=1")  # a video
+        self.assertEqual(self.run_command("closetab"), self.REFUSED)
+        with s.lock:
+            s.show(2)
+        self.assertEqual(self.run_command("closetab"), self.REFUSED)
+        self.assertEqual(set(self.chromium.tabs), set(rotation))  # every site's tab still open
+        self.assertEqual(s.tabs, [t for t in s.tabs if t is None or t in self.chromium.tabs])
+        self.assertFalse(s.paused)  # a refused Close tab changes nothing
+
+    def test_a_closed_tab_chromium_still_lists_is_not_followed(self):
+        s = self.screen
+        first = self.open_tab("https://one.example/", "P1")
+        self.follow()
+        second = self.open_tab("https://two.example/", "P2")
+        self.follow()
+        closing = set()  # Chromium answers "Target is closing" and lists the tab a few ms more
+
+        def lingering(screen, path, method="GET"):
+            if path.startswith("/json/close/"):
+                closing.add(path.removeprefix("/json/close/"))
+                return "Target is closing"
+            listed = self.chromium.http(screen, path, method)
+            if path == "/json/list":
+                for tab in closing:
+                    self.chromium.tabs.pop(tab, None)
+                closing.clear()
+            return listed
+        with mock.patch.object(kiosk.Screen, "devtools", lingering):
+            self.assertEqual(self.run_command("closetab"), (200, None))
+            self.assertEqual((s.popups, s.active_tab(), s.closed), ([first], first, {second}))
+            self.follow()  # gone now: forgotten
+            self.assertEqual((s.popups, s.closed, s.state()["page"]), ([first], set(), "one.example"))
+            with s.lock:
+                s.show(1)  # the other ways tabs get closed go through close_tab too
+            self.follow()
+            self.assertEqual((s.popups, s.closed), ([], {first}))
+            self.follow()
+            self.assertEqual(s.closed, set())
+
+
 class Previews(PiTest):
 
     def setUp(self):
@@ -835,6 +931,27 @@ class UplinkOverWebSocket(UplinkTest):
                 self.screen.follow_tabs()  # what loop() does every 0.5 s
             self.assertTrue(wait_until(lambda: any(m["state"]["screens"][0]["page"] == "court.example/cases/12"
                                                    for m in conn.of_type("state")), 2))
+
+    def test_close_tab_over_the_relay(self):
+        relay = self.relay(FakeRelay)
+        for tab in self.screens.pop(1).tabs:  # one screen, as in test_navigation_is_pushed_as_state
+            self.chromium.tabs.pop(tab, None)
+        self.start_uplink(f"http://127.0.0.1:{relay.port}")
+        conn = self.connect(relay)
+        self.chromium.tabs["P1"] = "https://court.example/cases/12"  # a link opened a tab
+        with self.screen.lock:
+            self.screen.follow_tabs()
+        self.assertTrue(wait_until(lambda: any(m["state"]["screens"][0]["closable"] for m in conn.of_type("state")), 2))
+        for id in ("c1", "c2"):
+            conn.send({"type": "command", "id": id, "method": "POST", "path": "/api/screen/0/closetab",
+                       "query": "", "body": None})
+            self.assertTrue(wait_until(lambda: conn.result(id)))
+        first, second = conn.result("c1"), conn.result("c2")
+        self.assertEqual((first["status"], first["body"]["screens"][0]["closable"],
+                          first["body"]["screens"][0]["page"]), (200, False, "example.org"))
+        self.assertNotIn("P1", self.chromium.tabs)
+        self.assertEqual((second["status"], second["body"]),  # the site's own tab: refused
+                         (409, {"error": "this tab is a rotation site's, so it stays open"}))
 
     def test_state_at_least_every_10_s(self):
         relay = self.relay(FakeRelay)

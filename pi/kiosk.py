@@ -348,8 +348,9 @@ class Screen:
         self.tabs = []
         self.temp = None  # (tab id, url) put up with "Show now"; closed on the next switch
         # tabs a page opened on top of ours (a target=_blank link, window.open), newest last;
-        # closed on the next switch, Show now or Resume (see follow_tabs)
+        # closed by the phone's Close tab, the next switch, Show now or Resume (see follow_tabs)
         self.popups = []
+        self.closed = set()  # tabs this kiosk closed that Chromium may still list for a moment
         self.on_screen = (None, "")  # (tab id, its URL now), from Chromium's tab list
         self.current = 0
         self.paused = False
@@ -391,7 +392,8 @@ class Screen:
                      if isinstance(t, dict) and t.get("type") == "page" and "id" in t}
         except (OSError, ValueError, TypeError, AttributeError):
             return  # as before; the next call tries again
-        ours = set(self.tabs) | ({self.temp[0]} if self.temp else set())
+        self.closed = {t for t in self.closed if t in pages}
+        ours = set(self.tabs) | ({self.temp[0]} if self.temp else set()) | self.closed
         kept = [t for t in self.popups if t in pages]
         # (Chromium lists the most recently active tab first: that one ends up on top)
         new = [t for t in reversed(pages) if t not in ours and t not in kept]
@@ -401,15 +403,21 @@ class Screen:
         tab = self.active_tab()
         self.on_screen = (tab, pages.get(tab, ""))
 
+    def close_tab(self, tab):
+        """Close a tab. Chromium can still list it for a few ms (seen with Chrome 156), so
+        follow_tabs mustn't take it for a new one. Caller holds self.lock."""
+        self.closed.add(tab)
+        try:
+            self.devtools(f"/json/close/{tab}")
+        except OSError:
+            pass
+
     def close_popups(self):
         """Close the tabs pages opened (follow_tabs). Returns whether there were any.
         Caller holds self.lock."""
         popups, self.popups = self.popups, []
         for tab in popups:
-            try:
-                self.devtools(f"/json/close/{tab}")
-            except OSError:
-                pass
+            self.close_tab(tab)
         return bool(popups)
 
     def cdp(self, run):
@@ -444,10 +452,7 @@ class Screen:
         except (OSError, ValueError, TypeError, AttributeError):
             return False  # the show goes on as before
         log(f"screen {self.index}: tab for {label(self.sites[i])} was on {label(url)}, reopening")
-        try:
-            self.devtools(f"/json/close/{self.tabs[i]}")
-        except OSError:
-            pass
+        self.close_tab(self.tabs[i])
         self.tabs[i] = self.new_tab(self.sites[i])
         return True
 
@@ -466,10 +471,7 @@ class Screen:
         if self.temp is None:
             return
         tab, self.temp = self.temp[0], None
-        try:
-            self.devtools(f"/json/close/{tab}")
-        except OSError:
-            pass
+        self.close_tab(tab)
 
     def save_sites(self):
         """Record how the phone page changed this screen's sites (sites.json)."""
@@ -498,6 +500,7 @@ class Screen:
         self.tabs = []
         self.temp = None
         self.popups = []
+        self.closed = set()
 
     def launch(self):
         self.kill()
@@ -626,10 +629,7 @@ class Screen:
                 tab = self.tabs.pop(i)
                 self.save_sites()
                 if tab is not None:
-                    try:
-                        self.devtools(f"/json/close/{tab}")
-                    except OSError:
-                        pass
+                    self.close_tab(tab)
                 if i < self.current:
                     self.current -= 1
                 elif i == self.current:
@@ -652,6 +652,17 @@ class Screen:
                     if not is_video(self.sites[self.current]) and (self.reset_tab(self.current) or popups):
                         self.devtools(f"/json/activate/{self.tabs[self.current]}")
                     self.next_switch = time.monotonic() + self.slot(self.current)
+            elif action == "closetab":  # the tab on screen, one at a time; never a rotation site's
+                self.follow_tabs()  # a tap may have opened a tab since the loop last looked
+                if self.popups:  # back to the tab underneath: the one that opened it, Show now's or the site's
+                    self.close_tab(self.popups.pop())
+                    if (tab := self.active_tab()) is not None:
+                        self.devtools(f"/json/activate/{tab}")
+                elif self.temp is not None:
+                    self.show(self.current)  # closes it: back to the rotation's site (still paused)
+                else:
+                    return "this tab is a rotation site's, so it stays open"
+                self.follow_tabs()  # so the state names the page on screen now
             else:
                 return "unknown command"
 
@@ -714,6 +725,8 @@ class Screen:
             "temp": label(self.temp[1]) if self.temp else None,
             # the page on screen now, wherever links took it (None: a video, or not known yet)
             "page": label(url) if url and on_top else None,
+            # whether Close tab (closetab) has a tab to close: one a link or Show now opened
+            "closable": bool(self.popups or self.temp) and self.player is None,
             "interval": self.interval,
             "sites": [label(u) for u in self.sites],
             "urls": self.sites,

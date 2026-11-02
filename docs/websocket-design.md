@@ -181,6 +181,14 @@ The page is used one-handed on a phone at a busy booth, by ~10 teammates. Goals:
   screen and a landscape lock where it has them; CSS only on an iPhone). Tap = click, a vertical swipe = scroll
   (the page follows the finger), and Exit / Back / Up / Down beside it (landscape) or below it (portrait). Exit,
   Escape, leaving the browser's full screen or the TV going offline end it.
+- **Close tab** (DM 3287). New command `closetab` (no body) closes the tab on screen when a link (`follow_tabs`)
+  or Show now opened it, one per tap: the newest link tab first, back to the tab underneath (the one that opened
+  it, Show now's, or the site's); Show now's tab goes back to the rotation's site, as Next would, but stays paused.
+  The rotation's own tabs are never closed: 409 `this tab is a rotation site's, so it stays open` (a link in the
+  same tab: Back). Each screen's state has `closable` (true while there is such a tab and no video on top); the
+  page shows "Close tab" with Back / Forward / Reload and in the full-screen keys only then, so a Pi that doesn't
+  send `closable` never shows it. Tabs kiosk.py closes are remembered until Chromium stops listing them (it can
+  for a few ms after "Target is closing"), so `follow_tabs` never takes one for a new tab.
 
 ## Tests
 

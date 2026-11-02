@@ -88,9 +88,9 @@
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
   .card.full > * { display: none; }
   .card.full > .frame { display: block; aspect-ratio: auto; border: 0; touch-action: none; }
-  .card.full > .dock { display: grid; align-content: start; gap: 8px; padding: 8px; background: var(--bg); }
+  .card.full > .dock { display: grid; align-content: start; gap: 8px; padding: 8px; background: var(--bg); overflow-y: auto; }
   .card.full .fs { display: none; }
-  .keys { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .keys { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; }
   .keys button { flex-direction: column; gap: 2px; min-height: 56px; padding: 4px; font-size: 14px; }
   .keys .exit { background: #fff; border-color: #fff; color: var(--bg); }
   .keys .exit:active { background: var(--focus); }
@@ -98,7 +98,7 @@
   .dock .hint strong { color: var(--text); }
   @media (orientation: landscape) {
     .card.full { grid-template-rows: none; grid-template-columns: minmax(0, 1fr) 96px; }
-    .keys { grid-template-columns: minmax(0, 1fr); }
+    .keys { grid-auto-flow: row; }
     .dock .hint { order: 1; }
     .dock .turn { display: none; }
   }
@@ -116,7 +116,7 @@
   .primary .main:active { background: #8247ff; }
   .browse { display: grid; gap: 8px; margin: 12px 12px 0; padding: 12px; border-radius: 14px; background: var(--well); }
   .hint { margin: 0; font-size: 14px; color: var(--dim); }
-  .nav { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .nav { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
   .scroll { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .nav button, .scroll button { flex-direction: column; gap: 2px; min-height: 58px; padding: 6px 4px; font-size: 14px; }
   .typing { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
@@ -286,7 +286,7 @@
     pause: "fM6.5 5h4v14h-4zM13.5 5h4v14h-4z", play: "fM7 4.5v15L19.5 12z", back: "sM19 12H5M11 6l-6 6 6 6",
     forward: "sM5 12h14M13 6l6 6-6 6", reload: "sM20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7", up: "sM12 19V5M6 11l6-6 6 6",
     down: "sM12 5v14M6 13l6 6 6-6", enter: "sM20 5v7a3 3 0 0 1-3 3H5M9 11l-4 4 4 4", x: "sM6 6l12 12M18 6 6 18",
-    expand: "sM4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" };
+    expand: "sM4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5", closetab: "sM3 4h18v16H3zM3 8h18M9.5 11.5l5 5M14.5 11.5l-5 5" };
   function icon(name) {
     const n = el("span", "", "ic");
     n.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path class="${ICONS[name][0]}" d="${ICONS[name].slice(1)}"/></svg>`;
@@ -371,6 +371,14 @@
       b.onclick = () => act(b, c, action);
       nav.append(b);
     }
+    // Close tab: shown while the TV is on a tab a link (or Show now) opened; back to the one underneath
+    c.closers = [button("Close tab", "closetab"), button("Close tab", "closetab")];
+    for (const b of c.closers) {
+      b.hidden = true;
+      b.setAttribute("aria-label", "Close the tab on the TV");
+      b.onclick = () => act(b, c, "closetab");
+    }
+    nav.append(c.closers[0]);
     for (const [label, ic, dy] of [["Scroll up", "up", -0.5], ["Scroll down", "down", 0.5]]) {
       const b = button(label, ic);
       b.onclick = () => act(b, c, "scroll", { body: { dy } });
@@ -416,6 +424,8 @@
       b.onclick = () => act(b, c, action, body && { body });
       keys.append(b);
     }
+    c.closers[1].setAttribute("aria-label", "Close the tab on the TV (full screen)");
+    keys.append(c.closers[1]);
     const hint = el("p", "", "hint");  // which TV this is, as the card's heading is hidden
     hint.append(el("strong", host), el("span", ": tap the picture to click, swipe it to scroll."));
     dock.append(hint, el("p", "Turn the phone sideways for a bigger picture.", "hint turn"), keys);
@@ -469,6 +479,7 @@
       : `${s.paused ? "Paused on" : "Showing"} ${s.page || site}`);
     set(c.pill, { starting: "Starting", temp: "Showing a link", paused: "Paused", rotating: "Rotating" }[kind]);
     c.bar.hidden = kind !== "temp" && kind !== "paused";
+    for (const b of c.closers) b.hidden = !s.closable;  // (a Pi before Close tab: never)
     set(c.bar, s.temp ? "Not saved. Tap to go back to the rotation." : "Rotation paused. Tap to resume.");
     if (c.pause.dataset.paused !== String(s.paused)) {
       c.pause.dataset.paused = String(s.paused);

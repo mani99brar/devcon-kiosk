@@ -56,9 +56,11 @@
     const opts = { method, headers: { "X-Code": code } };
     if (body) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
     const r = await fetch(withToken(base + path), opts);
-    if (r.status === 403 && !base) { code = ""; save(""); showLogin("Wrong access code"); throw new Error("code"); }
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || r.statusText);
+    // the Pis and the relay answer JSON; an HTML page comes from a proxy in front (e.g. edge1)
+    const data = (r.headers.get("Content-Type") || "").includes("application/json") ? await r.json() : null;
+    if (r.status === 403 && !base && data) { code = ""; save(""); showLogin("Wrong access code"); throw new Error("code"); }
+    if (r.status === 403 && !data) throw new Error("the link was rejected, open the team link again");
+    if (!r.ok || !data) throw new Error((data && data.error) || `${r.status} ${r.statusText}`.trim());
     return data;
   }
 

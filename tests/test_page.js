@@ -232,7 +232,7 @@ const cases = [
     ws.push({ type: "result", id: cmd.id, status: 200, body: st("kleros1", { ...two, paused: true }) });
     await r.settle();
     const updated = !has(next, "busy") && !next.attrs["aria-busy"] && text(r.find((x) => has(x, "pill"))) === "Paused"
-      && r.btn("Resume") && !r.btn("Pause");
+      && r.btn("Resume rotation") && !r.btn("Pause rotation");
     r.btn("b").onclick();
     const jump = r.commands()[1];
     ws.push({ type: "result", id: jump.id, status: 409, body: { error: "a video is playing" } });

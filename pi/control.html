@@ -358,7 +358,7 @@
 
     const primary = el("div", "", "primary");
     c.prev = button("Prev", "prev");
-    c.pause = button("Pause", "pause", "main");
+    c.pause = button("Pause rotation", "pause", "main");
     c.next = button("Next", "next");
     c.prev.onclick = () => act(c.prev, c, "prev");
     c.pause.onclick = () => act(c.pause, c, c.s.paused ? "resume" : "pause");
@@ -480,10 +480,13 @@
     set(c.pill, { starting: "Starting", temp: "Showing a link", paused: "Paused", rotating: "Rotating" }[kind]);
     c.bar.hidden = kind !== "temp" && kind !== "paused";
     for (const b of c.closers) b.hidden = !s.closable;  // (a Pi before Close tab: never)
-    set(c.bar, s.temp ? "Not saved. Tap to go back to the rotation." : "Rotation paused. Tap to resume.");
+    // Pause holds the rotation on what is showing; a video on screen keeps repeating
+    const video = !s.temp && (site || "").startsWith("▶");
+    set(c.bar, s.temp ? "Not saved. Tap to go back to the rotation."
+      : video ? "Rotation paused: the video keeps repeating. Tap to resume." : "Rotation paused. Tap to resume.");
     if (c.pause.dataset.paused !== String(s.paused)) {
       c.pause.dataset.paused = String(s.paused);
-      c.pause.replaceChildren(icon(s.paused ? "play" : "pause"), el("span", s.paused ? "Resume" : "Pause"));
+      c.pause.replaceChildren(icon(s.paused ? "play" : "pause"), el("span", s.paused ? "Resume rotation" : "Pause rotation"));
     }
     const sig = JSON.stringify([s.sites, s.urls, s.current, s.temp]);
     if (c.sig === sig) return;

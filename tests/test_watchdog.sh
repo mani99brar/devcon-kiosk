@@ -155,22 +155,22 @@ healthy_funnel_on() {
   fresh
   echo 2 > "$T/state/fails"
   run
-  rc_is 0 && said "ok again" && fails_is 0 && called "curl https://kleros1.tail0000.ts.net/status" \
-    && self_checks_are 1 && not_called systemctl
+  rc_is 0 && said "ok again" && fails_is 0 && not_called "curl https://kleros1.tail0000.ts.net/status" \
+    && self_checks_are 0 && not_called systemctl
 }
 healthy_funnel_off() {
   fresh
   run TS_FUNNEL=off
-  rc_is 0 && said "ok: online" && fails_is 0 && called "tailscale funnel status" && self_checks_are 0
+  rc_is 0 && said "ok: online" && fails_is 0 && not_called "tailscale funnel status" && self_checks_are 0
 }
 self_check_retried() {
   fresh
-  run SELF_CODES="000 200"
+  run WATCHDOG_CHECK_URL=https://kleros1.tail0000.ts.net/status SELF_CODES="000 200"
   rc_is 0 && fails_is 0 && self_checks_are 2
 }
 funnel_502() {
   fresh
-  run SELF_CODES=502
+  run WATCHDOG_CHECK_URL=https://kleros1.tail0000.ts.net/status SELF_CODES=502
   rc_is 0 && fails_is 1 && self_checks_are 2 && said "answered 502" && not_called systemctl
 }
 tailscaled_not_answering() {
@@ -227,10 +227,10 @@ failed_restart() {
 t "tailscale not installed: exits 0, touches nothing" not_installed
 t "not signed in / stopped: left alone, not counted" not_signed_in
 t "no internet: count reset, no self-check, no restart" no_internet
-t "healthy, Funnel on: count reset, checks https://<DNSName>/status" healthy_funnel_on
+t "healthy, Funnel on: count reset, own Funnel link not fetched" healthy_funnel_on
 t "healthy, Funnel off: no self-check" healthy_funnel_off
-t "self-check gets a second try" self_check_retried
-t "Funnel answers 502 twice: counted" funnel_502
+t "WATCHDOG_CHECK_URL gets a second try" self_check_retried
+t "WATCHDOG_CHECK_URL answers 502 twice: counted" funnel_502
 t "tailscaled not answering: counted" tailscaled_not_answering
 t "stuck in Starting: counted (bad count file read as 0)" stuck_starting
 t "WATCHDOG_CHECK_URL is checked even with Funnel off" check_url_override

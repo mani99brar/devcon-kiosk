@@ -23,7 +23,7 @@ if ! command -v tailscale >/dev/null; then
 fi
 
 status=$(timeout 20 tailscale status --json 2>/dev/null)
-read -r backend online dns <<<"$(python3 -I -c '
+read -r backend online _ <<<"$(python3 -I -c '
 import json, sys
 try:
     s = json.load(sys.stdin)
@@ -58,10 +58,8 @@ elif [ "$backend" != Running ]; then
 elif [ "$online" != True ]; then
   reason="tailscale shows this Pi as offline"
 else
-  if [ -z "$check_url" ] && [ "$dns" != - ]; then
-    funnel=$(timeout 20 tailscale funnel status 2>/dev/null)
-    if [[ $funnel == *https://* ]]; then check_url="https://$dns/status"; fi
-  fi
+  # No self-fetch of the Funnel URL by default: on 2 Nov a Pi fetching its own Funnel URL got a
+  # TLS decode error while the link worked from outside, which would restart tailscaled for nothing.
   if [ -n "$check_url" ]; then
     for _ in 1 2; do
       code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$check_url")

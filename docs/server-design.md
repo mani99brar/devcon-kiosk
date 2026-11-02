@@ -175,9 +175,9 @@ Each run:
    `NeedsMachineAuth`, `Stopped` or `NoState`: leave it alone (exit 0, no counting).
 2. Internet check: any HTTP answer from `https://controlplane.tailscale.com/` within 10 s. None →
    reset the failure count, exit 0 (restarting can't help).
-3. Healthy = `BackendState == Running` and `Self.Online` is true, and, if Funnel is on
-   (`tailscale funnel status` lists an `https://` URL), `GET https://<Self.DNSName>/status` returns
-   200 within 15 s (two tries).
+3. Healthy = `BackendState == Running` and `Self.Online` is true. (The first version also fetched
+   the Pi's own Funnel URL; on 2 Nov that got a TLS decode error on both Pis while the links worked
+   from outside, so it was dropped. `WATCHDOG_CHECK_URL` still adds a URL check, for tests.)
 4. Healthy → reset the count. Unhealthy → count + 1, log the reason. At 3 in a row, and if the last
    restart was at least 10 minutes ago: `systemctl restart tailscaled`, log it, reset the count.
 

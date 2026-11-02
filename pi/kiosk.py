@@ -347,6 +347,10 @@ class Screen:
         self.player = None
         self.tabs = []
         self.temp = None  # (tab id, url) put up with "Show now"; closed on the next switch
+        # tabs a page opened on top of ours (a target=_blank link, window.open), newest last;
+        # closed on the next switch, Show now or Resume (see follow_tabs)
+        self.popups = []
+        self.on_screen = (None, "")  # (tab id, its URL now), from Chromium's tab list
         self.current = 0
         self.paused = False
         self.next_switch = 0.0
@@ -366,11 +370,47 @@ class Screen:
         return self.devtools("/json/new?" + urllib.parse.quote(url, safe=":/"), "PUT")["id"]
 
     def active_tab(self):
-        """The tab on screen: the "Show now" tab, else the current site's (None for a video)."""
-        temp, tabs, current = self.temp, self.tabs, self.current
+        """The tab on screen: the newest tab a page opened, else the "Show now" tab, else the
+        current site's (None for a video)."""
+        popups, temp, tabs, current = self.popups, self.temp, self.tabs, self.current
+        if popups:
+            return popups[-1]
         if temp is not None:
             return temp[0]
         return tabs[current] if current < len(tabs) else None
+
+    def follow_tabs(self):
+        """Keep up with what Chromium shows. A link with target=_blank (or window.open, or the
+        mouse) opens a tab this kiosk didn't, in front of ours: it becomes the tab on screen
+        (previews, browsing) until the next switch, Show now or Resume closes it. Also notes
+        the URL of the tab on screen for state(). Caller holds self.lock."""
+        if not self.tabs:  # starting: the boot status page is the only tab
+            return
+        try:
+            pages = {t["id"]: t.get("url", "") for t in self.devtools("/json/list")
+                     if isinstance(t, dict) and t.get("type") == "page" and "id" in t}
+        except (OSError, ValueError, TypeError, AttributeError):
+            return  # as before; the next call tries again
+        ours = set(self.tabs) | ({self.temp[0]} if self.temp else set())
+        kept = [t for t in self.popups if t in pages]
+        # (Chromium lists the most recently active tab first: that one ends up on top)
+        new = [t for t in reversed(pages) if t not in ours and t not in kept]
+        if new:
+            log(f"screen {self.index}: a page opened {label(pages[new[-1]])} in a new tab, following it")
+        self.popups = kept + new
+        tab = self.active_tab()
+        self.on_screen = (tab, pages.get(tab, ""))
+
+    def close_popups(self):
+        """Close the tabs pages opened (follow_tabs). Returns whether there were any.
+        Caller holds self.lock."""
+        popups, self.popups = self.popups, []
+        for tab in popups:
+            try:
+                self.devtools(f"/json/close/{tab}")
+            except OSError:
+                pass
+        return bool(popups)
 
     def cdp(self, run):
         """run(page) with page a Page: a short DevTools WebSocket connection to the tab on
@@ -457,6 +497,7 @@ class Screen:
         self.proc = None
         self.tabs = []
         self.temp = None
+        self.popups = []
 
     def launch(self):
         self.kill()
@@ -506,6 +547,7 @@ class Screen:
         i %= len(self.tabs)
         self.stop_video()
         self.close_temp()
+        self.close_popups()
         self.current = i
         if is_video(self.sites[i]):
             self.play(self.sites[i])
@@ -542,6 +584,7 @@ class Screen:
                             self.show(self.current + 1)
                     elif self.tabs and not self.paused and time.monotonic() >= self.next_switch:
                         self.show(self.current + 1)
+                    self.follow_tabs()
                 self.errors = 0
             except Exception as e:
                 self.errors += 1
@@ -562,6 +605,7 @@ class Screen:
             if action == "show":  # put a link up now, paused, without keeping it
                 self.stop_video()
                 self.close_temp()
+                self.close_popups()
                 tab = self.new_tab(url)
                 self.devtools(f"/json/activate/{tab}")
                 self.temp = (tab, url)
@@ -603,8 +647,9 @@ class Screen:
                 if self.temp is not None:
                     self.show(self.current)
                 elif self.player is None:
-                    # put a tab that was browsed off its site back on it
-                    if not is_video(self.sites[self.current]) and self.reset_tab(self.current):
+                    # close the tabs pages opened, and put a tab that was browsed off its site back on it
+                    popups = self.close_popups()
+                    if not is_video(self.sites[self.current]) and (self.reset_tab(self.current) or popups):
                         self.devtools(f"/json/activate/{self.tabs[self.current]}")
                     self.next_switch = time.monotonic() + self.slot(self.current)
             else:
@@ -616,6 +661,7 @@ class Screen:
         with self.lock:
             if not self.tabs:
                 return "screen is still starting"
+            self.follow_tabs()  # a tap may have opened a tab since the loop last looked
             if self.player is not None or self.active_tab() is None:
                 return "a video is playing"
             self.cdp(lambda page: page_action(page, action, data))
@@ -657,6 +703,8 @@ class Screen:
         return self.snapshot()
 
     def state(self):
+        tab, url = self.on_screen
+        on_top = tab is not None and tab == self.active_tab() and self.player is None
         return {
             "index": self.index,
             "output": self.output,
@@ -664,6 +712,8 @@ class Screen:
             "paused": self.paused,
             "current": self.current,
             "temp": label(self.temp[1]) if self.temp else None,
+            # the page on screen now, wherever links took it (None: a video, or not known yet)
+            "page": label(url) if url and on_top else None,
             "interval": self.interval,
             "sites": [label(u) for u in self.sites],
             "urls": self.sites,

@@ -32,8 +32,18 @@
   .ic .f { fill: currentColor; }
   .ic .s { fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
 
-  .top { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 12px;
+  .top { position: sticky; top: 0; z-index: 3;
     padding: max(10px, env(safe-area-inset-top)) 16px 10px; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .row { display: flex; align-items: center; gap: 12px; }
+  /* which Pi's TV the page controls: one at a time, the chosen one filled in */
+  .pick { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; max-width: 520px;
+    margin-top: 10px; padding: 4px; border-radius: 14px; background: var(--well); border: 1px solid var(--line); }
+  .pick button { min-height: 46px; border-radius: 10px; background: transparent; border-color: transparent; color: var(--dim); }
+  .pick button.on { background: var(--brand-strong); color: #fff; box-shadow: 0 2px 10px rgb(0 0 0 / .35); }
+  .dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--live); }
+  [data-kind=paused] > .dot { background: var(--amber); }
+  [data-kind=wait] > .dot, [data-kind=off] > .dot { background: var(--red); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .brand { display: flex; align-items: center; gap: 8px; margin-right: auto; font-size: 22px; font-weight: 800; letter-spacing: -.03em; }
   .brand svg { width: 26px; height: 26px; }
   .brand small { font-size: 15px; font-weight: 500; letter-spacing: 0; color: var(--dim); }
@@ -67,6 +77,31 @@
     color: var(--dim); font-size: 14px; }
   .shot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
   .shot:not([src]) { visibility: hidden; }
+  .fs { position: absolute; right: 8px; bottom: 8px; min-height: 40px; padding: 0 12px; gap: 6px; font-size: 14px;
+    background: rgb(19 14 36 / .8); border-color: rgb(255 255 255 / .4); color: #fff; }
+  .fs .ic svg { width: 18px; height: 18px; }
+  .dock { display: none; }
+  /* full screen: one TV's picture fills the phone, a few controls beside it (landscape) or below it */
+  :root:has(.card.full) { overflow: hidden; }
+  .card.full { position: fixed; inset: 0; z-index: 10; display: grid; grid-template-rows: minmax(0, 1fr) auto;
+    border-radius: 0; background: #000; overscroll-behavior: contain;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  .card.full > * { display: none; }
+  .card.full > .frame { display: block; aspect-ratio: auto; border: 0; touch-action: none; }
+  .card.full > .dock { display: grid; align-content: start; gap: 8px; padding: 8px; background: var(--bg); }
+  .card.full .fs { display: none; }
+  .keys { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .keys button { flex-direction: column; gap: 2px; min-height: 56px; padding: 4px; font-size: 14px; }
+  .keys .exit { background: #fff; border-color: #fff; color: var(--bg); }
+  .keys .exit:active { background: var(--focus); }
+  .dock .hint { text-align: center; font-size: 13px; }
+  .dock .hint strong { color: var(--text); }
+  @media (orientation: landscape) {
+    .card.full { grid-template-rows: none; grid-template-columns: minmax(0, 1fr) 96px; }
+    .keys { grid-template-columns: minmax(0, 1fr); }
+    .dock .hint { order: 1; }
+    .dock .turn { display: none; }
+  }
   .ripple { position: absolute; width: 56px; height: 56px; margin: -28px 0 0 -28px; border-radius: 50%;
     border: 3px solid #fff; background: rgb(111 44 255 / .35); box-shadow: 0 0 0 2px rgb(19 14 36 / .85); pointer-events: none;
     animation: ripple .65s ease-out forwards; }
@@ -97,7 +132,7 @@
   .gone .off { margin: 0 16px; font-size: 18px; font-weight: 600; }
   .gone .hint { margin: 6px 16px 0; }
 
-  .toast { position: fixed; left: 12px; right: 12px; bottom: max(16px, env(safe-area-inset-bottom)); z-index: 5;
+  .toast { position: fixed; left: 12px; right: 12px; bottom: max(16px, env(safe-area-inset-bottom)); z-index: 11;
     max-width: 520px; margin: 0 auto; padding: 14px 16px; border-radius: 14px; background: #3d1426;
     border: 1px solid var(--red); color: #ffe6ea; font-weight: 600; box-shadow: 0 12px 32px rgb(0 0 0 / .5);
     visibility: hidden; opacity: 0; transform: translateY(10px); transition: opacity .15s, transform .15s, visibility .15s; }
@@ -112,7 +147,8 @@
 
   @media (max-width: 420px) { .brand small { display: none; } }
   @media (max-width: 359px) {
-    .top { gap: 8px; padding-left: 12px; padding-right: 12px; }
+    .top { padding-left: 12px; padding-right: 12px; }
+    .row { gap: 8px; }
     .primary { gap: 6px; }
     .primary button, .typing button { padding: 0 8px; gap: 6px; }
   }
@@ -121,7 +157,8 @@
     .card { border-radius: 18px; overflow: hidden; }
   }
   @media (min-width: 960px) {
-    #hosts { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; max-width: 1500px; margin: 0 auto; }
+    #hosts { align-items: start; max-width: 820px; margin: 0 auto; }
+    #hosts.many { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 1500px; }  /* a Pi with two TVs */
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before { animation: none !important; transition: none !important; }
@@ -132,12 +169,15 @@
 </head>
 <body>
 <header class="top">
-  <div class="brand">
-    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 27 9.5v13L16 29 5 22.5v-13z" fill="none" stroke="#9b6bff" stroke-width="2.6" stroke-linejoin="round"/><path d="M16 3v26M5 9.5l22 13M27 9.5l-22 13" stroke="#6f2cff" stroke-width="1.6"/></svg>
-    <span>kleros</span><small>Booth screens</small>
+  <div class="row">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 27 9.5v13L16 29 5 22.5v-13z" fill="none" stroke="#9b6bff" stroke-width="2.6" stroke-linejoin="round"/><path d="M16 3v26M5 9.5l22 13M27 9.5l-22 13" stroke="#6f2cff" stroke-width="1.6"/></svg>
+      <span>kleros</span><small>Booth screens</small>
+    </div>
+    <span id="conn" class="conn" role="status" hidden></span>
+    <button id="logout" class="ghost" type="button" hidden>Log out</button>
   </div>
-  <span id="conn" class="conn" role="status" hidden></span>
-  <button id="logout" class="ghost" type="button" hidden>Log out</button>
+  <nav id="pick" class="pick" aria-label="Choose the TV to control" hidden></nav>
 </header>
 <main>
   <form id="login" class="login" hidden>
@@ -153,9 +193,11 @@
 </main>
 <div id="toast" class="toast" role="alert"></div>
 <script>
-  function load() { try { return localStorage.getItem("kioskCode") || ""; } catch (e) { return ""; } }
-  function save(v) { try { v ? localStorage.setItem("kioskCode", v) : localStorage.removeItem("kioskCode"); } catch (e) {} }
+  function load(k = "kioskCode") { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } }
+  function save(v, k = "kioskCode") { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} }
   let code = load();
+  // the Pi whose TV the page shows and controls, picked in the header; this phone remembers a pick
+  let chosen = load("kioskPi");
   // a team link carries the code after "#c=": keep it on this phone and drop it from the address bar
   const fromLink = new URLSearchParams(location.hash.slice(1)).get("c");
   if (fromLink) { code = fromLink; save(code); history.replaceState(null, "", location.pathname + location.search); }
@@ -171,7 +213,8 @@
   const cards = {};     // one per TV ("host/screen"), kept across refreshes so half-typed text and the preview survive
   const offCards = {};  // "not connected" cards per host
   const last = {};      // latest state per host, from either transport
-  let shown = [];       // the TV cards on the page now
+  let shown = [];       // the TV cards on the page now (the chosen Pi's)
+  let lastEntries = []; // what render() drew last, every Pi's
   // served by the relay server ("hub"): a WebSocket gets pushes and carries commands; until it is
   // connected (or where WebSockets are blocked) the page polls over HTTP every 3 s as before
   let ws = null, live = false, retry = 1, retryTimer = 0, seq = 0;
@@ -193,10 +236,12 @@
 
   function showLogin(msg) {
     disconnect();
+    leaveFull();
     $("login").hidden = false;
     $("hosts").replaceChildren();
     $("loginErr").textContent = msg || "";
     $("logout").hidden = true;
+    $("pick").hidden = true;
     setConn("");
   }
 
@@ -240,7 +285,8 @@
   const ICONS = { prev: "fM6 5h2.5v14H6zM20 5v14L9.5 12z", next: "fM15.5 5H18v14h-2.5zM4 5v14l10.5-7z",
     pause: "fM6.5 5h4v14h-4zM13.5 5h4v14h-4z", play: "fM7 4.5v15L19.5 12z", back: "sM19 12H5M11 6l-6 6 6 6",
     forward: "sM5 12h14M13 6l6 6-6 6", reload: "sM20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7", up: "sM12 19V5M6 11l6-6 6 6",
-    down: "sM12 5v14M6 13l6 6 6-6", enter: "sM20 5v7a3 3 0 0 1-3 3H5M9 11l-4 4 4 4", x: "sM6 6l12 12M18 6 6 18" };
+    down: "sM12 5v14M6 13l6 6 6-6", enter: "sM20 5v7a3 3 0 0 1-3 3H5M9 11l-4 4 4 4", x: "sM6 6l12 12M18 6 6 18",
+    expand: "sM4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" };
   function icon(name) {
     const n = el("span", "", "ic");
     n.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path class="${ICONS[name][0]}" d="${ICONS[name].slice(1)}"/></svg>`;
@@ -298,7 +344,13 @@
     c.img = el("img", "", "shot");
     c.img.alt = `What ${host} shows now. Tap the picture to click there on the TV.`;
     c.img.onclick = (e) => tap(c, e);
-    c.frame.append(c.img);
+    // in full screen a swipe on the picture scrolls the TV's page (a tap still clicks)
+    c.img.onpointerdown = (e) => { c.from = full === c ? e.clientY : null; };
+    c.img.onpointerup = (e) => swipe(c, e);
+    c.img.onpointercancel = () => { c.from = null; };
+    c.fsBtn = button("Full screen", "expand", "fs");
+    c.fsBtn.onclick = () => enterFull(c);
+    c.frame.append(c.img, c.fsBtn);
 
     c.bar = el("button", "", "bar");
     c.bar.type = "button";
@@ -350,8 +402,60 @@
     link.append(c.link, showNow, keep);
 
     c.sites = el("ul", "", "sites");
-    c.root.append(head, c.frame, c.bar, primary, browse, link, c.sites);
+
+    // shown only in full screen, next to the picture
+    const dock = el("div", "", "dock"), keys = el("div", "", "keys");
+    c.exit = button("Exit", "x", "exit");
+    c.exit.setAttribute("aria-label", "Exit full screen");
+    c.exit.onclick = () => leaveFull();
+    keys.append(c.exit);
+    for (const [label, ic, action, body] of [["Back", "back", "back"], ["Up", "up", "scroll", { dy: -0.5 }],
+      ["Down", "down", "scroll", { dy: 0.5 }]]) {
+      const b = button(label, ic);
+      if (body) b.setAttribute("aria-label", `Scroll ${label.toLowerCase()} (full screen)`);
+      b.onclick = () => act(b, c, action, body && { body });
+      keys.append(b);
+    }
+    const hint = el("p", "", "hint");  // which TV this is, as the card's heading is hidden
+    hint.append(el("strong", host), el("span", ": tap the picture to click, swipe it to scroll."));
+    dock.append(hint, el("p", "Turn the phone sideways for a bigger picture.", "hint turn"), keys);
+    c.root.append(head, c.frame, c.bar, primary, browse, link, c.sites, dock);
     return c;
+  }
+
+  // full screen: one TV's picture fills the phone (the browser's own full screen too, where it has
+  // one: not on an iPhone); Exit, Escape or leaving the browser's full screen go back
+  let full = null;
+  function enterFull(c) {
+    leaveFull();
+    full = c;
+    c.root.classList.add("full");
+    c.exit.focus?.({ preventScroll: true });
+    const page = document.documentElement;
+    if (page && page.requestFullscreen && !document.fullscreenElement) {
+      page.requestFullscreen({ navigationUI: "hide" })
+        .then(() => globalThis.screen?.orientation?.lock?.("landscape")).catch(() => {});
+    }
+  }
+  function leaveFull() {
+    const c = full;
+    if (!c) return;
+    full = null;
+    c.root.classList.remove("full");
+    c.fsBtn.focus?.({ preventScroll: true });
+    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  }
+  document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement) leaveFull(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") leaveFull(); });
+
+  // a swipe up on the picture scrolls the TV's page down, as far as the finger went
+  function swipe(c, e) {
+    if (c.from == null) return;
+    const dy = e.clientY - c.from, h = c.img.getBoundingClientRect().height;
+    c.from = null;
+    if (Math.abs(dy) < 24 || !h) return;  // a tap: the click does it
+    // (the click a mouse still sends after a drag finds the picture busy with this, so it isn't one)
+    act(c.frame, c, "scroll", { body: { dy: +Math.max(-2, Math.min(2, -dy / h)).toFixed(2) } });
   }
 
   function fill(c, base, host, s, many) {
@@ -360,8 +464,9 @@
     const kind = !s.ready ? "starting" : s.temp ? "temp" : s.paused ? "paused" : "rotating";
     c.root.dataset.state = kind;
     set(c.name, many ? `${host}, screen ${s.index + 1}` : host);
-    set(c.now, !s.ready ? "Starting…" : s.temp ? `Showing ${s.temp} (not in the rotation)`
-      : `${s.paused ? "Paused on" : "Showing"} ${site}`);
+    // s.page: the page on screen now, wherever links took it (a Pi before it had this: the site)
+    set(c.now, !s.ready ? "Starting…" : s.temp ? `Showing ${s.page || s.temp} (not in the rotation)`
+      : `${s.paused ? "Paused on" : "Showing"} ${s.page || site}`);
     set(c.pill, { starting: "Starting", temp: "Showing a link", paused: "Paused", rotating: "Rotating" }[kind]);
     c.bar.hidden = kind !== "temp" && kind !== "paused";
     set(c.bar, s.temp ? "Not saved. Tap to go back to the rotation." : "Rotation paused. Tap to resume.");
@@ -403,26 +508,73 @@
     return c.root;
   }
 
-  // entries: [{base, name, state, online}], state null when that Pi is offline
+  // entries: [{base, name, state, online}], state null when that Pi is offline.
+  // Every Pi gets a button in the header; only the chosen Pi's TVs are on the page.
   function render(entries) {
-    const nodes = [], seen = new Set();
+    lastEntries = entries;
+    const list = [], nodes = [], before = shown;
+    for (const e of entries) {
+      const name = e.state ? e.state.host : e.name;
+      if (!name || list.some((x) => x.name === name)) continue;
+      list.push({ ...e, name });
+      if (e.state) last[name] = e.state;
+    }
+    // no pick yet (or that Pi is gone): the first one that is up, kept until someone taps another
+    if (!list.some((x) => x.name === chosen)) chosen = (list.find((x) => x.state) || list.find((x) => x.online) || list[0] || {}).name || "";
+    pickBar(list);
     shown = [];
-    for (const { base, name, state, online } of entries) {
+    for (const { base, name, state, online } of list) {
+      if (name !== chosen) continue;
       if (!state) { nodes.push(offCard(name, online)); continue; }
-      if (seen.has(state.host)) continue;
-      seen.add(state.host);
-      last[state.host] = state;
       for (const s of state.screens) {
-        const c = cards[`${state.host}/${s.index}`] ||= makeCard(state.host, s.index);
-        fill(c, base, state.host, s, state.screens.length > 1);
+        const c = cards[`${name}/${s.index}`] ||= makeCard(name, s.index);
+        fill(c, base, name, s, state.screens.length > 1);
         nodes.push(c.root);
         shown.push(c);
       }
     }
+    // a TV switched away from keeps no picture: coming back shows a fresh one, never an old one
+    for (const c of before) if (!shown.includes(c)) clearShot(c.img);
+    if (full && !shown.includes(full)) leaveFull();  // that TV went offline
     // only move cards when the set changes: moving a card would close the keyboard of someone typing in it
     const root = $("hosts");
+    root.className = shown.length > 1 ? "many" : "";
     if (nodes.length !== root.children.length || nodes.some((n, i) => n !== root.children[i])) root.replaceChildren(...nodes);
     $("logout").hidden = false;
+  }
+
+  const PICK = { on: "rotating", paused: "paused", wait: "connecting", off: "not connected" };
+  function pickBar(list) {
+    const bar = $("pick"), names = list.map((x) => x.name).sort();
+    bar.hidden = names.length < 2;
+    if (bar.dataset.names !== names.join(" ")) {
+      bar.dataset.names = names.join(" ");
+      bar.replaceChildren(...names.map((name) => {
+        const b = el("button");
+        b.type = "button";
+        b.dataset.host = name;
+        b.append(el("span", "", "dot"), el("span", name), el("span", "", "sr"));
+        b.onclick = () => choose(name);
+        return b;
+      }));
+    }
+    for (const b of bar.children) {
+      const { state, online } = list.find((x) => x.name === b.dataset.host);
+      const kind = !state ? (online ? "wait" : "off") : state.screens.some((s) => s.paused || s.temp) ? "paused" : "on";
+      b.dataset.kind = kind;
+      set(b.children[2], `, ${PICK[kind]}`);
+      b.className = b.dataset.host === chosen ? "on" : "";
+      b.setAttribute("aria-pressed", String(b.dataset.host === chosen));
+    }
+  }
+
+  function choose(name) {
+    if (name === chosen) return;
+    chosen = name;
+    save(name, "kioskPi");
+    if (live) return draw();  // draws, then watches the chosen Pi's TVs instead
+    render(lastEntries);
+    for (const c of shown) updateShot(c);
   }
 
   // tap on the preview = click at that spot on the TV (x/y as fractions of the picture)
@@ -447,12 +599,19 @@
     if (old.startsWith("blob:")) URL.revokeObjectURL(old);
   }
 
-  async function updateShot(img, base, index) {
+  function clearShot(img) {
+    const old = img.src;
+    img.removeAttribute("src");  // back to "No picture yet"
+    if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+  }
+
+  async function updateShot(c) {
     if (document.hidden) return;
     try {
-      const r = await fetch(withToken(`${base}/api/screen/${index}/shot.jpg`), { headers: { "X-Code": code } });
+      const r = await fetch(withToken(`${c.base}/api/screen/${c.s.index}/shot.jpg`), { headers: { "X-Code": code } });
       if (!r.ok) return;
-      setShot(img, await r.blob());
+      const blob = await r.blob();
+      if (shown.includes(c)) setShot(c.img, blob);  // (unless someone switched to the other Pi meanwhile)
     } catch (e) {}
   }
 
@@ -473,7 +632,7 @@
     if (live || !code) return;  // the WebSocket took over meanwhile, or logged out
     setConn("poll");
     render(own.hub ? results : [{ base: "", state: own }, ...results]);
-    for (const c of shown) updateShot(c.img, c.base, c.s.index);
+    for (const c of shown) updateShot(c);
     if (own.hub) connect();
   }
 
@@ -562,7 +721,8 @@
   function preview(data) {
     const b = new Uint8Array(data), n = b[0];
     const c = cards[`${String.fromCharCode(...b.subarray(1, 1 + n))}/${b[1 + n]}`];
-    if (c && b.length > n + 2) setShot(c.img, new Blob([b.subarray(n + 2)], { type: "image/jpeg" }));
+    // (a frame still on its way for a TV switched away from is dropped)
+    if (c && shown.includes(c) && b.length > n + 2) setShot(c.img, new Blob([b.subarray(n + 2)], { type: "image/jpeg" }));
   }
 
   document.addEventListener("visibilitychange", () => {

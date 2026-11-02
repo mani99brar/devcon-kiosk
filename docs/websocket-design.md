@@ -164,6 +164,24 @@ The page is used one-handed on a phone at a busy booth, by ~10 teammates. Goals:
 - Still one self-contained HTML file with inline CSS/JS, **no external fonts, scripts or images** (it must work on the
   Pi's own page with no internet), system font stack, dark theme (it's used next to bright TVs).
 
+## After the first try (Manmeet, 2 Nov evening)
+
+- **One TV at a time, with a picker.** The header has a button per Pi (status dot: green rotating, amber paused or
+  showing a link, red offline); only the picked Pi's card is on the page, and only it is watched (previews). No
+  pick yet: the first Pi that is up. The phone remembers a tap (`localStorage` `kioskPi`); the team link is
+  unchanged. Switching away clears that card's picture, so coming back never shows an old one.
+- **Previews and the card follow links.** A link with `target=_blank` (or `window.open`) opens a new tab in front
+  of the rotation tab; kiosk.py only knew its own tabs, so it kept capturing the hidden tab underneath (Chromium
+  still hands out its last frame), browsing went to that hidden tab (3 s timeout), and Resume left the new tab up.
+  Now `Screen.follow_tabs()` (every loop turn, ~0.5 s, and before each browsing command) takes a page tab the
+  kiosk didn't open as the tab on screen until the next switch, Show now or Resume closes it. Each screen's state
+  also has `page`: the label of the URL on screen now (None for a video or not known yet), so the state push
+  follows navigation; the card says "Showing <page>" and falls back to the site for a Pi without it.
+- **Full screen.** A "Full screen" button on the preview fills the phone with the picture (the browser's own full
+  screen and a landscape lock where it has them; CSS only on an iPhone). Tap = click, a vertical swipe = scroll
+  (the page follows the finger), and Exit / Back / Up / Down beside it (landscape) or below it (portrait). Exit,
+  Escape, leaving the browser's full screen or the TV going offline end it.
+
 ## Tests
 
 - `tests/test_relay.py` (existing, 21 tests) keeps passing unchanged.

@@ -16,7 +16,7 @@ function mk(tag) {
     replaceChildren(...c) { for (const k of this.children) k.parent = null; this.children = []; this.append(...c); },
     remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; },
     addEventListener(t, f) { this.on[t] = f; },
-    setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; },
+    setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; if (k === "src") this.src = ""; },
     getBoundingClientRect() { return this.rect || { left: 0, top: 0, width: 0, height: 0 }; } };
   const has = (c) => n.className.split(" ").includes(c);
   n.classList = { contains: has, add: (c) => { if (!has(c)) n.className = `${n.className} ${c}`.trim(); },
@@ -32,11 +32,16 @@ async function boot(href, routes, opts = {}) {
   const u = new URL(href);
   const fetched = [], posts = [], replaced = [], sockets = [], confirms = [], revoked = [], blobs = [];
   const els = { login: mk("form"), loginErr: mk("p"), code: mk("input"), hosts: mk("div"), toast: mk("div"),
-    conn: mk("span"), logout: mk("button") };
-  els.login.hidden = els.logout.hidden = els.conn.hidden = true;
-  const docOn = {};
-  const document = { getElementById: (id) => els[id], createElement: mk, hidden: false,
+    conn: mk("span"), logout: mk("button"), pick: mk("nav") };
+  els.login.hidden = els.logout.hidden = els.conn.hidden = els.pick.hidden = true;
+  const docOn = {}, fullscreen = [];
+  // a browser with the Fullscreen API (opts.noFullscreen: an iPhone, without it)
+  const document = { getElementById: (id) => els[id], createElement: mk, hidden: false, fullscreenElement: null,
     addEventListener: (t, f) => { docOn[t] = f; } };
+  if (!opts.noFullscreen) {
+    document.documentElement = { requestFullscreen: async (o) => { fullscreen.push(["enter", o]); document.fullscreenElement = document.documentElement; } };
+    document.exitFullscreen = async () => { fullscreen.push(["exit"]); document.fullscreenElement = null; };
+  }
   const location = { href: u.href, origin: u.origin, protocol: u.protocol, host: u.host, pathname: u.pathname,
     search: u.search, hash: u.hash };
   const history = { replaceState: (a, b, url) => replaced.push(url) };
@@ -62,15 +67,19 @@ async function boot(href, routes, opts = {}) {
   }
 
   const flat = (n) => [has(n, "name") || has(n, "off") ? n.textContent : null, ...n.children.flatMap(flat)].filter(Boolean);
-  const env = { fetched, posts, replaced, sockets, confirms, revoked, blobs, store, els, tick, settle,
+  const env = { fetched, posts, replaced, sockets, confirms, revoked, blobs, store, els, tick, settle, routes,
     confirmAnswer: true, failWs: !!opts.failWs,
     get rendered() { return flat(els.hosts); },
+    // the Pi picker in the header: "host kind[ pressed]" per button, and a button by host
+    get picks() { return els.pick.children.map((b) => `${b.dataset.host} ${b.dataset.kind}${b.attrs["aria-pressed"] === "true" ? " pressed" : ""}`); },
+    pick: (host) => els.pick.children.find((b) => b.dataset.host === host),
     get ws() { return sockets[sockets.length - 1]; },
     find: (pred) => all(els.hosts).find(pred),
     btn: (l, nth = 0) => all(els.hosts).filter((n) => n.tag === "button" && label(n) === l)[nth],
     input: (l) => all(els.hosts).find((n) => n.tag === "input" && n.attrs["aria-label"] === l),
     card: (host) => all(els.hosts).find((n) => n.tag === "section" && n.children[0] && text(n.children[0]).startsWith(host)),
     setHidden: (h) => { document.hidden = h; docOn.visibilitychange(); },
+    fullscreen, doc: document, fire: (t, e = {}) => docOn[t](e),
     commands: () => sockets.flatMap((s) => s.sent).filter((m) => m.type === "command"),
     // the phone WebSocket after auth: hello, then one state per Pi
     async live(states, ws = sockets[sockets.length - 1]) {
@@ -128,6 +137,13 @@ const hub = {
   "/api/pi/kleros1/api/state": [200, JSON_TYPE, { host: "kleros1", peers: [], screens: [screen] }],
   "/api/pi/kleros2/api/state": [503, JSON_TYPE, { error: "kleros2 is not connected" }],
 };
+const hubBoth = { ...hub,  // both Pis up, with pictures
+  "/api/state": [200, JSON_TYPE, { hub: true, host: "server", peers: [], pis: [
+    { host: "kleros1", base: "/api/pi/kleros1", online: true }, { host: "kleros2", base: "/api/pi/kleros2", online: true }] }],
+  "/api/pi/kleros2/api/state": [200, JSON_TYPE, st("kleros2")],
+  "/api/pi/kleros1/api/screen/0/shot.jpg": [200, "image/jpeg", "jpeg"],
+  "/api/pi/kleros2/api/screen/0/shot.jpg": [200, "image/jpeg", "jpeg"],
+};
 const pi = {
   "/api/state": [200, JSON_TYPE, { host: "kleros1", peers: ["https://kleros1.tn.ts.net", "https://kleros2.tn.ts.net"], screens: [screen] }],
   "https://kleros2.tn.ts.net/api/state": [200, JSON_TYPE, { host: "kleros2", peers: [], screens: [screen] }],
@@ -141,13 +157,13 @@ const BROWSE = [["Back", "back"], ["Forward", "forward"], ["Reload", "reload"], 
   ["Scroll down", "scroll", { dy: 0.5 }]];
 
 const cases = [
-  ["hub: both Pis listed, token on every fetch, #c= dropped but ?lab_token kept", TEAM, hub, (r) =>
-    r.rendered.join("|") === "kleros1|kleros2|kleros2 is not connected"
+  ["hub: both Pis listed in the picker, the first one's card shown, token on every fetch, #c= dropped but ?lab_token kept", TEAM, hub, (r) =>
+    r.rendered.join("|") === "kleros1" && same(r.picks, ["kleros1 on pressed", "kleros2 off"]) && !r.els.pick.hidden
     && r.fetched.every((f) => f.includes("lab_token=T%26x")) && r.replaced[0] === "/?lab_token=T%26x"
     && !r.fetched.some((f) => f.includes("ts.net")) && r.els.conn.textContent === "Updating every 3 s"],
-  ["Pi mode: Funnel peers fetched without any token, no WebSocket", PI, pi, (r) =>
-    r.rendered.join("|") === "kleros1|kleros2" && r.fetched.every((f) => !f.includes("lab_token"))
-    && r.sockets.length === 0],
+  ["Pi mode: Funnel peers fetched without any token, no WebSocket, own Pi picked", PI, pi, (r) =>
+    r.rendered.join("|") === "kleros1" && same(r.picks, ["kleros1 on pressed", "kleros2 on"])
+    && r.fetched.every((f) => !f.includes("lab_token")) && r.sockets.length === 0],
   ["edge1 403 (HTML, bad link token): code kept, no login box, clear message", TEAM,
     { ...hub, "/api/state": nginx(403) }, (r) =>
     r.store.kioskCode === CODE && r.els.login.hidden && has(r.els.toast, "show")
@@ -159,9 +175,13 @@ const cases = [
     { ...hub, "/api/state": nginx(502) }, (r) =>
     r.els.toast.textContent === "Can't reach this Pi: 502 Bad Gateway" && r.store.kioskCode === CODE
     && r.els.conn.textContent === "Reconnecting…"],
-  ["edge1 504 (HTML) on one Pi: that Pi shows not connected, the other renders", TEAM,
-    { ...hub, "/api/pi/kleros1/api/state": nginx(504) }, (r) =>
-    r.rendered.join("|") === "kleros1|kleros1 is not connected|kleros2|kleros2 is not connected"],
+  ["edge1 504 (HTML) on one Pi: that Pi shows not connected, the other renders when picked", TEAM,
+    { ...hub, "/api/pi/kleros1/api/state": nginx(504) }, async (r) => {
+    const first = r.rendered.join("|") === "kleros1|kleros1 is not connected" && same(r.picks, ["kleros1 off pressed", "kleros2 off"]);
+    r.pick("kleros2").onclick();
+    await r.settle();
+    return first && r.rendered.join("|") === "kleros2|kleros2 is not connected";
+  }],
 
   ["login: the code typed in is saved and the page loads", PI, pi, async (r) => {
     const before = !r.els.login.hidden && r.fetched.length === 0;
@@ -169,7 +189,7 @@ const cases = [
     r.els.login.on.submit({ preventDefault() {} });
     await r.settle();
     return before && r.store.kioskCode === "typed-code-0123456789" && r.els.login.hidden && !r.els.logout.hidden
-      && r.rendered.join("|") === "kleros1|kleros2";
+      && r.rendered.join("|") === "kleros1" && !r.els.pick.hidden && r.picks.length === 2;
   }, { store: {} }],
   ["hub: WebSocket on /ws/phone with the token, auth first, cards from pushes, no polling while live", TEAM, hub, async (r) => {
     const ws = r.ws;
@@ -182,8 +202,11 @@ const cases = [
     const n = r.fetched.length;
     await r.tick(10000);
     const on = r.find((x) => x.className === "site on");
+    const cards = r.rendered.join("|") === "kleros1" && same(r.picks, ["kleros1 on pressed", "kleros2 off", "kleros3 wait"]);
+    r.pick("kleros3").onclick();
+    await r.settle();
     return url && same(ws.sent[0], { type: "auth", code: CODE }) && r.els.conn.textContent === "Live"
-      && r.rendered.join("|") === "kleros1|kleros2|kleros2 is not connected|kleros3|Waiting for kleros3…"
+      && cards && r.rendered.join("|") === "kleros3|Waiting for kleros3…"
       && on && text(on).startsWith("bOn now") && r.fetched.length === n && r.sockets.length === 1;
   }],
   ["hub: an HTTP poll still running when the WebSocket connects doesn't draw over the pushed state", TEAM, hub, async (r) => {
@@ -264,16 +287,19 @@ const cases = [
     return first.startsWith("blob:") && img.src !== first && img.src.startsWith("blob:") && same(r.revoked, [first])
       && r.blobs.length === 2 && r.blobs[0].size === 4 && r.blobs[0].type === "image/jpeg" && r.blobs[1].size === 5;
   }],
-  ["hub WS: watch the TVs on the page, off while the page is hidden, on again when visible", TEAM, hub, async (r) => {
+  ["hub WS: watch the picked Pi's TVs, off while the page is hidden, on again when visible", TEAM, hub, async (r) => {
     const ws = await r.live({ kleros1: st("kleros1"), kleros2: null });
     const watches = () => ws.sent.filter((m) => m.type === "watch").map((m) => `${m.host}/${m.screen}/${m.on}`);
     const first = same(watches(), ["kleros1/0/true"]);
     r.setHidden(true);
     const hidden = same(watches(), ["kleros1/0/true", "kleros1/0/false"]);
     r.setHidden(false);
-    ws.push({ type: "state", host: "kleros2", online: true, state: st("kleros2") });
+    ws.push({ type: "state", host: "kleros2", online: true, state: st("kleros2") });  // not picked: not watched
     ws.push({ type: "state", host: "kleros1", online: false, state: null });
-    return first && hidden && same(watches(), ["kleros1/0/true", "kleros1/0/false", "kleros1/0/true", "kleros2/0/true", "kleros1/0/false"])
+    const offline = same(watches(), ["kleros1/0/true", "kleros1/0/false", "kleros1/0/true", "kleros1/0/false"])
+      && r.rendered.join("|") === "kleros1|kleros1 is not connected";
+    r.pick("kleros2").onclick();
+    return first && hidden && offline && same(watches().slice(4), ["kleros2/0/true"])
       && ws.sent.filter((m) => m.type === "watch").every((m) => typeof m.screen === "number");
   }],
   ["tap on the preview clicks at that spot (fractions of the picture, letterbox ignored, ripple), Pi mode and hub", PI, pi, async (r) => {
@@ -354,8 +380,11 @@ const cases = [
       "/api/state": [200, JSON_TYPE, { ...st("kleros1", { paused: true }), peers: ["https://kleros2.tn.ts.net"] }] }, async (r) => {
     const bar = (host) => all(r.card(host)).find((x) => has(x, "bar"));
     const pill = (host) => text(all(r.card(host)).find((x) => has(x, "pill")));
-    const ok = !bar("kleros1").hidden && bar("kleros1").textContent === "Rotation paused. Tap to resume." && pill("kleros1") === "Paused"
-      && !bar("kleros2").hidden && bar("kleros2").textContent === "Not saved. Tap to go back to the rotation."
+    const one = !bar("kleros1").hidden && bar("kleros1").textContent === "Rotation paused. Tap to resume." && pill("kleros1") === "Paused"
+      && same(r.picks, ["kleros1 paused pressed", "kleros2 paused"]);
+    r.pick("kleros2").onclick();
+    await r.settle();
+    const ok = one && !bar("kleros2").hidden && bar("kleros2").textContent === "Not saved. Tap to go back to the rotation."
       && pill("kleros2") === "Showing a link";
     bar("kleros2").onclick();
     await r.settle();
@@ -367,7 +396,122 @@ const cases = [
     const n = r.fetched.length;
     await r.tick(60000);
     return r.store.kioskCode === undefined && !r.els.login.hidden && r.els.loginErr.textContent === "" && ws.closed
-      && r.sockets.length === 1 && r.fetched.length === n && r.rendered.length === 0;
+      && r.sockets.length === 1 && r.fetched.length === n && r.rendered.length === 0 && r.els.pick.hidden;
+  }],
+
+  // issue 1: a picker for the Pis
+  ["picker: tapping the other Pi shows only its card, gets its picture at once with the token, and this phone remembers it", TEAM, hubBoth, async (r) => {
+    const first = r.rendered.join("|") === "kleros1" && same(r.picks, ["kleros1 on pressed", "kleros2 on"]) && !r.els.pick.hidden;
+    const img1 = r.find((x) => x.tag === "img"), old = img1.src;
+    const n = r.fetched.length;
+    r.pick("kleros2").onclick();
+    await r.settle();
+    const img2 = r.find((x) => x.tag === "img");
+    const switched = r.rendered.join("|") === "kleros2" && same(r.picks, ["kleros1 on", "kleros2 on pressed"])
+      && r.pick("kleros2").className === "on" && r.pick("kleros1").className === "" && r.store.kioskPi === "kleros2"
+      && same(r.fetched.slice(n), ["/api/pi/kleros2/api/screen/0/shot.jpg?lab_token=T%26x"])
+      && old.startsWith("blob:") && img1.src === "" && r.revoked.includes(old) && img2 !== img1 && img2.src.startsWith("blob:");
+    const m = r.fetched.length;
+    await r.tick(3000);  // the next poll: both Pis' state for the picker, only the picked one's picture
+    const polled = same(r.fetched.slice(m).filter((f) => f.includes("shot.jpg")), ["/api/pi/kleros2/api/screen/0/shot.jpg?lab_token=T%26x"])
+      && r.fetched.slice(m).filter((f) => f.endsWith("/api/state?lab_token=T%26x")).length === 3;
+    const again = await boot(TEAM, hubBoth, { store: r.store });  // the team link opened again on this phone
+    return first && switched && polled && again.rendered.join("|") === "kleros2" && same(again.picks, ["kleros1 on", "kleros2 on pressed"])
+      && again.fetched.every((f) => f.includes("lab_token=T%26x")) && again.replaced[0] === "/?lab_token=T%26x";
+  }],
+  ["picker over the WebSocket: watches only the picked Pi, clears the old picture and drops its late frames", TEAM, hub, async (r) => {
+    const ws = await r.live({ kleros1: st("kleros1"), kleros2: st("kleros2") });
+    const watches = () => ws.sent.filter((m) => m.type === "watch").map((m) => `${m.host}/${m.screen}/${m.on}`);
+    ws.push(frame("kleros1", 0, [0xff, 0xd8, 0xff, 0xd9]));
+    const img1 = r.find((x) => x.tag === "img"), old = img1.src;
+    r.pick("kleros2").onclick();
+    const swapped = same(watches(), ["kleros1/0/true", "kleros1/0/false", "kleros2/0/true"]) && img1.src === "" && r.revoked.includes(old);
+    const n = r.blobs.length;
+    ws.push(frame("kleros1", 0, [0xff, 0xd8, 1, 0xff, 0xd9]));  // was already on its way: dropped
+    const dropped = r.blobs.length === n && img1.src === "";
+    ws.push(frame("kleros2", 0, [0xff, 0xd8, 0xff, 0xd9]));
+    const img2 = r.find((x) => x.tag === "img");
+    const two = img2 !== img1 && img2.src.startsWith("blob:") && r.rendered.join("|") === "kleros2";
+    r.pick("kleros1").onclick();
+    return swapped && dropped && two && same(watches().slice(3), ["kleros2/0/false", "kleros1/0/true"])
+      && img1.src === "" && img2.src === "" && r.rendered.join("|") === "kleros1" && r.store.kioskPi === "kleros1";
+  }],
+  ["picker: no pick yet means the first Pi that is up, kept when another comes up; a saved Pi that's gone falls back; one Pi, no picker", TEAM,
+    { ...hubBoth, "/api/pi/kleros1/api/state": [503, JSON_TYPE, { error: "kleros1 is not connected" }] }, async (r) => {
+    const first = r.rendered.join("|") === "kleros2" && same(r.picks, ["kleros1 off", "kleros2 on pressed"]) && r.store.kioskPi === undefined;
+    r.routes["/api/pi/kleros1/api/state"] = [200, JSON_TYPE, st("kleros1")];  // kleros1 comes up
+    await r.tick(3000);
+    const kept = r.rendered.join("|") === "kleros2" && same(r.picks, ["kleros1 on", "kleros2 on pressed"]);
+    const gone = await boot(TEAM, hubBoth, { store: { kioskCode: CODE, kioskPi: "kleros9" } });
+    const one = await boot(PI, { "/api/state": [200, JSON_TYPE, st("kleros1")] });
+    return first && kept && gone.rendered.join("|") === "kleros1" && one.rendered.join("|") === "kleros1" && one.els.pick.hidden;
+  }],
+
+  // issue 2: the card follows the page on screen
+  ["the card names the page on screen as links take it elsewhere (state pushes), else the site (a Pi without page)", TEAM, hub, async (r) => {
+    const ws = await r.live({ kleros1: st("kleros1", { page: "a.example" }) });
+    const now = () => text(r.find((x) => has(x, "now")));
+    const push = (s) => ws.push({ type: "state", host: "kleros1", online: true, state: st("kleros1", s) });
+    const a = now() === "Showing a.example";
+    push({ paused: true, page: "court.kleros.io/cases/12" });
+    const b = now() === "Paused on court.kleros.io/cases/12";
+    push({ paused: true, temp: "x.example", page: "y.example/z" });
+    const c = now() === "Showing y.example/z (not in the rotation)";
+    push({ paused: true });
+    return a && b && c && now() === "Paused on a";
+  }],
+
+  // issue 3: full screen
+  ["full screen: the corner button fills the phone with the picture; a tap clicks at the spot, a swipe scrolls, Back/Up/Down, Exit", TEAM, hub, async (r) => {
+    const ws = await r.live({ kleros1: st("kleros1") });
+    const card = r.card("kleros1"), img = r.find((x) => x.tag === "img");
+    const answer = async () => { const c = r.commands().at(-1); ws.push({ type: "result", id: c.id, status: 200, body: st("kleros1") }); await r.settle(); };
+    r.btn("Full screen").onclick();
+    await r.settle();
+    const entered = has(card, "full") && same(r.fullscreen, [["enter", { navigationUI: "hide" }]]);
+    // a phone on its side: the 768x432 picture fills the 390 px height, 693 px wide from x = 75
+    Object.assign(img, { rect: { left: 0, top: 0, width: 844, height: 390 }, naturalWidth: 768, naturalHeight: 432 });
+    const w = 768 * 390 / 432, left = (844 - w) / 2;
+    img.onpointerdown({ clientX: left + w * 0.3, clientY: 234 });
+    img.onpointerup({ clientX: left + w * 0.3, clientY: 237 });  // a tap, with a little wobble
+    img.onclick({ clientX: left + w * 0.3, clientY: 234 });
+    await answer();
+    img.onpointerdown({ clientX: 400, clientY: 300 });
+    img.onpointerup({ clientX: 410, clientY: 105 });  // up by half the picture: the TV's page scrolls down half a screen
+    img.onclick({ clientX: 410, clientY: 105 });      // the click a mouse sends after a drag: not a tap
+    await answer();
+    const dock = (l) => all(card).filter((n) => n.tag === "button" && label(n) === l).at(-1);
+    for (const l of ["Back", "Scroll up (full screen)", "Scroll down (full screen)"]) { dock(l).onclick(); await answer(); }
+    const sent = r.commands().map((c) => [c.path.split("/").pop(), c.body]);
+    dock("Exit full screen").onclick();
+    await r.settle();
+    return entered && same(sent, [["click", { x: 0.3, y: 0.6 }], ["scroll", { dy: 0.5 }], ["back", null], ["scroll", { dy: -0.5 }],
+      ["scroll", { dy: 0.5 }]]) && !has(card, "full") && same(r.fullscreen.at(-1), ["exit"]) && r.doc.fullscreenElement === null;
+  }],
+  ["full screen: Escape, leaving the browser's full screen or the TV going offline end it; no swipes outside it; an iPhone gets it too", TEAM, hub, async (r) => {
+    const ws = await r.live({ kleros1: st("kleros1") });
+    const card = r.card("kleros1"), img = r.find((x) => x.tag === "img");
+    Object.assign(img, { rect: { left: 0, top: 0, width: 400, height: 225 }, naturalWidth: 768, naturalHeight: 432 });
+    img.onpointerdown({ clientX: 100, clientY: 200 });
+    img.onpointerup({ clientX: 100, clientY: 20 });  // not in full screen: that's the phone scrolling the page
+    const noSwipe = r.commands().length === 0;
+    r.btn("Full screen").onclick();
+    r.fire("keydown", { key: "Escape" });
+    const esc = !has(card, "full");
+    r.btn("Full screen").onclick();
+    await r.settle();
+    r.doc.fullscreenElement = null;  // the phone's back gesture left the browser's full screen
+    r.fire("fullscreenchange");
+    const back = !has(card, "full");
+    r.btn("Full screen").onclick();
+    ws.push({ type: "state", host: "kleros1", online: false, state: null });
+    const offline = !has(card, "full") && r.rendered.join("|") === "kleros1|kleros1 is not connected";
+    const phone = await boot(TEAM, hub, { noFullscreen: true });
+    await phone.live({ kleros1: st("kleros1") });
+    phone.btn("Full screen").onclick();
+    const iphone = has(phone.card("kleros1"), "full") && phone.fullscreen.length === 0;
+    phone.btn("Exit full screen").onclick();
+    return noSwipe && esc && back && offline && iphone && !has(phone.card("kleros1"), "full");
   }],
 ];
 

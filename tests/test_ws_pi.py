@@ -430,6 +430,120 @@ class WanderedTabs(PiTest):
             self.assertEqual(self.screen.showing, SITES[2])
 
 
+class NewTabs(PiTest):
+    """Issue 2 (2 Nov): a link that opens a new tab (target=_blank) put that tab in front on the
+    TV, but previews, browsing and the state stayed on the hidden tab underneath."""
+
+    def open_tab(self, url, tab="P1"):
+        """A page opens a tab, as Chromium does for a target=_blank link: it is in front."""
+        self.chromium.tabs[tab] = url
+        self.screen.showing = url
+        return tab
+
+    def follow(self):
+        with self.screen.lock:  # what loop() does every 0.5 s
+            self.screen.follow_tabs()
+
+    def test_a_tab_a_link_opened_is_followed(self):
+        s = self.screen
+        self.assertEqual(self.run_command("click", {"x": 0.5, "y": 0.5}), (200, None))
+        popup = self.open_tab("https://court.example/cases/12?from=link")
+        self.assertEqual(s.capture(), FakeChromium.picture(s.tabs[0]))  # before: the hidden tab (the bug)
+        self.follow()
+        self.follow()
+        self.assertEqual(s.active_tab(), popup)
+        self.assertEqual(s.capture(), FakeChromium.picture(popup))  # the preview is what the TV shows
+        self.assertEqual(s.state()["page"], "court.example/cases/12")
+        self.assertEqual(s.state()["current"], 0)  # still the same place in the rotation
+        self.assertEqual(self.logged("in a new tab"),
+                         ["screen 0: a page opened court.example/cases/12 in a new tab, following it"])
+        self.assertFalse(self.logged("from=link"), "a query string was logged")
+
+    def test_browsing_goes_to_the_new_tab_at_once(self):
+        self.assertEqual(self.run_command("click", {"x": 0.5, "y": 0.5}), (200, None))
+        popup = self.open_tab("https://court.example/")
+        self.chromium.calls.clear()  # no loop turn in between: browse() looks for itself
+        self.assertEqual(self.run_command("scroll", {"dy": 1}), (200, None))
+        self.assertEqual({tab for tab, method, params in self.chromium.calls}, {popup})
+
+    def test_resume_closes_it_and_shows_the_site_again(self):
+        s = self.screen
+        self.run_command("click", {"x": 0.5, "y": 0.5})
+        popup = self.open_tab("https://court.example/")
+        self.follow()
+        self.assertEqual(self.run_command("resume"), (200, None))
+        self.assertNotIn(popup, self.chromium.tabs)  # closed, so tabs don't pile up
+        self.assertEqual((s.popups, s.active_tab(), s.showing, s.paused), ([], s.tabs[0], SITES[0], False))
+        self.follow()
+        self.assertEqual(s.state()["page"], "example.org")
+
+    def test_next_and_show_now_close_it(self):
+        s = self.screen
+        popup = self.open_tab("https://court.example/")
+        self.follow()
+        self.assertEqual(self.run_command("next"), (200, None))
+        self.assertNotIn(popup, self.chromium.tabs)
+        self.assertEqual(s.popups, [])
+        self.run_command("jump", query="site=0")
+        popup = self.open_tab("https://court.example/", "P2")
+        self.follow()
+        self.assertEqual(self.run_command("show", {"url": "kleros.io"}), (200, None))
+        self.assertNotIn(popup, self.chromium.tabs)
+        self.assertEqual(s.active_tab(), s.temp[0])
+
+    def test_tabs_that_close_themselves_are_dropped(self):
+        s = self.screen
+        first = self.open_tab("https://one.example/", "P1")
+        self.follow()
+        second = self.open_tab("https://two.example/", "P2")  # a link in the first one
+        self.follow()
+        self.assertEqual((s.popups, s.active_tab()), ([first, second], second))
+        del self.chromium.tabs[second]  # window.close()
+        self.follow()
+        self.assertEqual((s.active_tab(), s.state()["page"]), (first, "one.example"))
+        del self.chromium.tabs[first]
+        self.follow()
+        self.assertEqual((s.popups, s.active_tab(), s.state()["page"]), ([], s.tabs[0], "example.org"))
+
+    def test_page_follows_navigation_in_the_same_tab(self):
+        s, tab = self.screen, self.screen.tabs[0]
+        self.assertIsNone(s.state()["page"])  # not looked yet
+        self.follow()
+        self.assertEqual(s.state()["page"], "example.org")
+        self.chromium.tabs[tab] = "https://example.org/cases/12"  # a link in the same tab
+        self.follow()
+        self.assertEqual(s.state()["page"], "example.org/cases/12")
+        with s.lock:
+            s.show(2)  # the rotation moves on: no stale page until the next look
+        self.assertIsNone(s.state()["page"])
+        self.follow()
+        self.assertEqual(s.state()["page"], "example.net/page")
+        self.run_command("show", {"url": "kleros.io"})
+        self.follow()
+        self.assertEqual((s.state()["page"], s.state()["temp"]), ("kleros.io", "kleros.io"))
+        self.run_command("jump", query="site=1")  # a video on top: no page
+        self.follow()
+        self.assertIsNone(s.state()["page"])
+
+    def test_starting_or_a_failing_tab_list_changes_nothing(self):
+        s = self.screen
+        tabs, s.tabs = s.tabs, []
+        self.open_tab("http://127.0.0.1:8080/status")  # the boot status page, while starting
+        self.follow()
+        self.assertEqual(s.popups, [])
+        s.tabs = tabs
+        self.follow()
+        popup = s.popups[-1]
+
+        def no_list(screen, path, method="GET"):
+            if path == "/json/list":
+                raise OSError("no list")
+            return self.chromium.http(screen, path, method)
+        with mock.patch.object(kiosk.Screen, "devtools", no_list):
+            self.follow()  # no exception: loop() would count it towards restarting Chromium
+        self.assertEqual(s.active_tab(), popup)
+
+
 class Previews(PiTest):
 
     def setUp(self):
@@ -706,6 +820,21 @@ class UplinkOverWebSocket(UplinkTest):
             self.assertTrue(conn.result("c5")["body"]["screens"][0]["paused"])
             self.assertIn(("Input.dispatchMouseEvent", {"type": "mousePressed", "x": 711.0, "y": 400.0,
                                                         "button": "left", "clickCount": 1}), self.calls())
+
+    def test_navigation_is_pushed_as_state(self):
+        relay = self.relay(FakeRelay)
+        # one screen: the fake Chromium is shared, and screen 1's tab would look opened by a page
+        # (on a Pi each screen has its own Chromium)
+        for tab in self.screens.pop(1).tabs:
+            self.chromium.tabs.pop(tab, None)
+        with mock.patch.object(kiosk, "STATE_EVERY", 60):
+            self.start_uplink(f"http://127.0.0.1:{relay.port}")
+            conn = self.connect(relay)
+            self.chromium.tabs["P1"] = "https://court.example/cases/12"  # a link opened a tab
+            with self.screen.lock:
+                self.screen.follow_tabs()  # what loop() does every 0.5 s
+            self.assertTrue(wait_until(lambda: any(m["state"]["screens"][0]["page"] == "court.example/cases/12"
+                                                   for m in conn.of_type("state")), 2))
 
     def test_state_at_least_every_10_s(self):
         relay = self.relay(FakeRelay)

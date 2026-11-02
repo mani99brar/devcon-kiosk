@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kiosk control</title>
+<style>
+  body { margin: 0; padding: 16px; background: #111; color: #eee; font: 18px system-ui, sans-serif; }
+  h1 { font-size: 22px; margin: 24px 0 4px; }
+  h1:first-of-type { margin-top: 0; }
+  h2 { font-size: 18px; margin: 16px 0 4px; }
+  .now { color: #aaa; margin: 0 0 8px; }
+  button { font: inherit; padding: 14px; border: 0; border-radius: 10px; background: #333; color: #eee; }
+  button:active { background: #555; }
+  .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .add { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .site { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin: 6px 0; }
+  .site button:first-child { text-align: left; overflow-wrap: anywhere; }
+  .on { background: #1f7a4d; color: #fff; }
+  input { font: inherit; padding: 12px; width: 100%; box-sizing: border-box; margin: 12px 0 8px; border-radius: 10px; border: 0; }
+  .err { color: #f77; }
+  .off { color: #f77; margin: 0 0 8px; }
+  .shot { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 10px; margin: 0 0 10px; object-fit: contain; }
+  .temp { background: #7a5a1f; color: #fff; text-align: left; width: 100%; margin: 6px 0; }
+</style>
+</head>
+<body>
+<form id="login" hidden>
+  <h1>Kiosk control</h1>
+  <label for="code">Access code</label>
+  <input id="code" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <button>Unlock</button>
+  <p id="loginErr" class="err"></p>
+</form>
+<p id="err" class="err"></p>
+<div id="hosts"></div>
+<script>
+  function load() { try { return localStorage.getItem("kioskCode") || ""; } catch (e) { return ""; } }
+  function save(v) { try { v ? localStorage.setItem("kioskCode", v) : localStorage.removeItem("kioskCode"); } catch (e) {} }
+  let code = load();
+  // a team link carries the code after "#c=": keep it on this phone and drop it from the address bar
+  const fromLink = new URLSearchParams(location.hash.slice(1)).get("c");
+  if (fromLink) { code = fromLink; save(code); history.replaceState(null, "", location.pathname); }
+
+  const inputs = {};  // kept across refreshes so a half-typed link survives
+  const shots = {};   // preview <img> per screen, also kept across refreshes
+
+  async function api(base, path, method = "GET", body) {
+    const opts = { method, headers: { "X-Code": code } };
+    if (body) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+    const r = await fetch(base + path, opts);
+    if (r.status === 403 && !base) { code = ""; save(""); showLogin("Wrong access code"); throw new Error("code"); }
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    return data;
+  }
+
+  function showLogin(msg) {
+    document.getElementById("login").hidden = false;
+    document.getElementById("hosts").replaceChildren();
+    document.getElementById("loginErr").textContent = msg || "";
+  }
+
+  document.getElementById("login").addEventListener("submit", (e) => {
+    e.preventDefault();
+    code = document.getElementById("code").value.trim();
+    save(code);
+    document.getElementById("login").hidden = true;
+    refresh();
+  });
+
+  function el(tag, text, cls) {
+    const n = document.createElement(tag);
+    if (text) n.textContent = text;
+    if (cls) n.className = cls;
+    return n;
+  }
+
+  function renderHost(root, base, state) {
+    root.append(el("h1", state.host));
+    for (const s of state.screens) {
+      const send = (action, opts = {}) =>
+        api(base, `/api/screen/${s.index}/${action}` + (opts.site === undefined ? "" : `?site=${opts.site}`),
+            "POST", opts.url === undefined ? undefined : { url: opts.url })
+          .then(() => { document.getElementById("err").textContent = ""; return refresh(true); })
+          .catch((e) => { if (e.message !== "code") document.getElementById("err").textContent = `${state.host}: ${e.message}`; });
+      if (state.screens.length > 1) root.append(el("h2", `Screen ${s.index + 1} (${s.output})`));
+      const now = !s.ready ? "Starting…" : s.temp ? `Showing ${s.temp} (not in the rotation)`
+        : `${s.paused ? "Paused on" : "Showing"} ${s.sites[s.current]}`;
+      root.append(el("p", now, "now"));
+
+      const key = `${state.host}/${s.index}`;
+      const shot = shots[key] ||= Object.assign(el("img", "", "shot"), { alt: `What ${state.host} shows now` });
+      root.append(shot);
+      updateShot(shot, base, s.index);
+
+      const row = el("div", "", "row");
+      const prev = el("button", "◀ Prev"), pause = el("button", s.paused ? "▶ Resume" : "❚❚ Pause"), next = el("button", "Next ▶");
+      prev.onclick = () => send("prev");
+      pause.onclick = () => send(s.paused ? "resume" : "pause");
+      next.onclick = () => send("next");
+      row.append(prev, pause, next);
+      root.append(row);
+
+      const input = inputs[key] ||= Object.assign(el("input"), { type: "url", placeholder: "Paste a link, e.g. court.kleros.io" });
+      const add = el("div", "", "add");
+      const showNow = el("button", "Show now"), keep = el("button", "Add to rotation");
+      showNow.onclick = () => input.value.trim() && send("show", { url: input.value }).then(() => { input.value = ""; });
+      keep.onclick = () => input.value.trim() && send("add", { url: input.value }).then(() => { input.value = ""; });
+      add.append(showNow, keep);
+      root.append(input, add);
+
+      if (s.temp) {
+        const t = el("button", `${s.temp}: showing now, not saved (tap Resume to go back)`, "temp");
+        t.onclick = () => send("resume");
+        root.append(t);
+      }
+      s.sites.forEach((name, i) => {
+        const line = el("div", "", "site");
+        const jump = el("button", name, i === s.current && !s.temp ? "on" : "");
+        jump.onclick = () => send("jump", { site: i });
+        const remove = el("button", "✕");
+        remove.setAttribute("aria-label", `Remove ${name}`);
+        remove.onclick = () => confirm(`Remove ${name} from ${state.host}'s rotation?`) && send("remove", { url: s.urls[i] });
+        line.append(jump, remove);
+        root.append(line);
+      });
+    }
+  }
+
+  async function updateShot(img, base, index) {
+    if (document.hidden) return;
+    try {
+      const r = await fetch(`${base}/api/screen/${index}/shot.jpg`, { headers: { "X-Code": code } });
+      if (!r.ok) return;
+      const old = img.src;
+      img.src = URL.createObjectURL(await r.blob());
+      if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+    } catch (e) {}
+  }
+
+  async function refresh(force) {
+    if (!code) return showLogin();
+    // don't redraw under someone typing a link
+    if (!force && document.activeElement && document.activeElement.tagName === "INPUT") return;
+    let own;
+    try { own = await api("", "/api/state"); } catch (e) {
+      if (e.message !== "code") document.getElementById("err").textContent = `Can't reach this Pi: ${e.message}`;
+      return;
+    }
+    const peers = (own.peers || []).filter((u) => new URL(u).origin !== location.origin);
+    const results = await Promise.all(peers.map((u) =>
+      api(u, "/api/state").then((st) => ({ base: u, state: st }), () => ({ base: u, state: null }))));
+    const root = document.getElementById("hosts");
+    root.replaceChildren();
+    const seen = new Set();
+    for (const { base, state } of [{ base: "", state: own }, ...results]) {
+      if (!state) { root.append(el("h1", new URL(base).hostname.split(".")[0]), el("p", "Not reachable right now", "off")); continue; }
+      if (seen.has(state.host)) continue;
+      seen.add(state.host);
+      renderHost(root, base, state);
+    }
+  }
+
+  refresh();
+  setInterval(() => { if (code && document.getElementById("login").hidden) refresh(); }, 3000);
+</script>
+</body>
+</html>

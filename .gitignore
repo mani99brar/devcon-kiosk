@@ -1,0 +1,11 @@
+# the team's access code: never commit it
+secret.toml
+# large media: share videos another way and put them here before deploying
+videos/*
+!videos/.gitkeep
+test-clips/
+shots/
+# local leftovers
+__pycache__/
+sites*.json
+.DS_Store

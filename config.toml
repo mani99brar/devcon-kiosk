@@ -1,0 +1,38 @@
+# Devcon booth kiosk config. Edit here, then rerun ./deploy.sh <host>.
+# Each Pi is picked by its hostname (set in Raspberry Pi Imager).
+# One [[pi.<hostname>.screen]] block per TV; add a site with one line in `sites`.
+# Videos: put the file in videos/ and add "video:<file>"; it plays once, then the rotation moves on.
+#   4K only as HEVC (hardware decode); H.264 up to 1080p.
+
+# The access code and the team links are in secret.toml (not in git; copy secret.example.toml to start).
+control_port = 8080      # phone control on the same Wi-Fi: http://<host>.local:8080
+interval = 25            # seconds per site (20-30 reads well at a booth)
+zoom = 1.35              # browser zoom; 1.25-1.5 reads from 2-3 m
+video_audio = false      # true sends video sound to the TV over HDMI
+
+[[pi.kleros1.screen]]
+output = "HDMI-A-1"      # HDMI0, the port next to the USB-C power port
+sites = [
+  "https://example.com",                      # placeholder
+  "https://www.raspberrypi.com",              # placeholder
+  "https://time.is",                          # placeholder
+  "https://duckduckgo.com/?q=devcon&ia=web",  # placeholder (tests a query string)
+  "video:test-1080p60-h264.mp4",              # TEST clip, remove before the event
+  "video:test-4k60-hevc.mp4",                 # TEST clip, remove before the event
+]
+
+[[pi.kleros2.screen]]
+output = "HDMI-A-1"
+interval = 30            # each screen can override interval and zoom
+sites = [
+  "https://en.wikipedia.org/wiki/Raspberry_Pi",  # placeholder
+  "https://example.org",                         # placeholder
+  "https://time.is",                             # placeholder
+]
+
+# Second TV on the same Pi (the earlier 1-Pi/2-TV layout; not tested):
+# [[pi.kleros1.screen]]
+# output = "HDMI-A-2"    # HDMI1; the wireless HDMI transmitter goes here
+# sites = [
+#   "https://example.net",
+# ]

@@ -40,8 +40,9 @@ fi
 port=$(cd "$K" && python3 -c 'import kiosk; print(kiosk.load_config()[2][0].control_port)')
 if ! tailscale status >/dev/null 2>&1; then
   echo "not signed in yet: run  sudo tailscale up --accept-dns=false  on this Pi and open the link it prints"
-elif sudo tailscale funnel status 2>/dev/null | grep -q "127.0.0.1:$port"; then
-  sudo tailscale funnel status | grep -m1 https://
+# read the status once: grep stopping early on a pipe would fail the script (pipefail)
+elif funnel=$(sudo tailscale funnel status 2>/dev/null) && grep -q "127.0.0.1:$port" <<<"$funnel"; then
+  grep -m1 https:// <<<"$funnel"
 else
   # --bg keeps the public link up across reboots; first time it may print a link to enable Funnel
   sudo timeout 90 tailscale funnel --bg "$port" || echo "funnel not on yet: open the link above, then rerun deploy.sh"

@@ -3,9 +3,15 @@ secret.toml
 # large media: share videos another way and put them here before deploying
 videos/*
 !videos/.gitkeep
+pages/*
+!pages/.gitkeep
 test-clips/
 shots/
 # local leftovers
 __pycache__/
 sites*.json
 .DS_Store
+# relay server (docker-compose.yml): settings with secrets, and local data
+.env
+data/
+config/

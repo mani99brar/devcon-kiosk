@@ -48,6 +48,49 @@ else
   sudo timeout 90 tailscale funnel --bg "$port" || echo "funnel not on yet: open the link above, then rerun deploy.sh"
 fi
 
+echo "== Tailscale watchdog (restarts tailscaled when it gets stuck)"
+if ! command -v tailscale >/dev/null; then
+  echo "skipped: tailscale isn't installed"
+else
+  wd=/usr/local/sbin/kiosk-tailscale-watchdog
+  units=/etc/systemd/system/kiosk-tailscale-watchdog
+  changed=0
+  if ! cmp -s "$K/tailscale-watchdog.sh" "$wd"; then
+    sudo install -o root -g root -m 0755 "$K/tailscale-watchdog.sh" "$wd"
+    changed=1
+  fi
+  want="[Unit]
+Description=Restart tailscaled if it is stuck (kiosk)
+
+[Service]
+Type=oneshot
+ExecStart=$wd
+SyslogIdentifier=kiosk-tailscale-watchdog
+TimeoutStartSec=5min"
+  reload=0
+  if [ "$(cat "$units.service" 2>/dev/null)" != "$want" ]; then
+    printf '%s\n' "$want" | sudo tee "$units.service" >/dev/null
+    reload=1
+  fi
+  want="[Unit]
+Description=Check Tailscale every minute (kiosk)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target"
+  if [ "$(cat "$units.timer" 2>/dev/null)" != "$want" ]; then
+    printf '%s\n' "$want" | sudo tee "$units.timer" >/dev/null
+    reload=1
+  fi
+  if ((reload)); then sudo systemctl daemon-reload; fi
+  sudo systemctl enable --now kiosk-tailscale-watchdog.timer
+  if ((changed || reload)); then echo "written"; else echo "already set"; fi
+fi
+
 echo "== Force 1080p on kiosk outputs (works with the TV off or unplugged)"
 reboot_needed=0
 cmdline=/boot/firmware/cmdline.txt

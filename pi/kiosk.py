@@ -9,8 +9,11 @@ Sites are preloaded as tabs; rotation switches tabs over Chromium's local
 DevTools HTTP endpoint (127.0.0.1 only). A `video:<file>` entry plays
 ~/kiosk/videos/<file> once in mpv on top of the browser, then moves on.
 Links added or removed from the phone page are kept in sites.json, on top of
-config.toml, so they survive reboots and deploys. Stdlib only.
+config.toml, so they survive reboots and deploys. With server_url in
+secret.toml, an uplink thread also connects out to the relay server
+(server/app.py) and runs the phone commands sent there. Stdlib only.
 """
+import base64
 import hmac
 import json
 import os
@@ -113,7 +116,11 @@ def load_config():
     screens = []
     changes = load_site_changes()
     for i, s in enumerate(blocks):
-        base = [u.strip() for u in s.get("sites", []) if u.strip()]
+        # a site is a URL, or { url = "...", seconds = 241 } to give it its own time on screen
+        entries = [e if isinstance(e, dict) else {"url": e} for e in s.get("sites", [])]
+        base = [str(e.get("url", "")).strip() for e in entries if str(e.get("url", "")).strip()]
+        seconds = {str(e["url"]).strip(): float(e["seconds"]) for e in entries
+                   if "seconds" in e and str(e.get("url", "")).strip()}
         if not base:
             sys.exit(f"screen {i} on {host} has no sites")
         c = changes.get(str(i), {})
@@ -126,6 +133,7 @@ def load_config():
             zoom=float(s.get("zoom", cfg.get("zoom", 1.35))),
             sites=sites or base,
             base=base,
+            seconds=seconds,
             control_port=int(cfg.get("control_port", 8080)),
             video_audio=bool(cfg.get("video_audio", False)),
         ))
@@ -174,6 +182,8 @@ def label(url):
     if is_video(url):
         return "▶ " + url.removeprefix("video:")
     parts = urllib.parse.urlsplit(url)
+    if parts.scheme == "file":  # a page from pages/: its file name
+        return parts.path.rsplit("/", 1)[-1] or url
     name = (parts.hostname or url).removeprefix("www.")
     if parts.path not in ("", "/"):
         name += parts.path
@@ -212,10 +222,11 @@ def mark_clean_exit(profile):
 
 class Screen:
     def __init__(self, index, output, interval, zoom, sites, control_port, video_audio=False,
-                 base=None):
+                 base=None, seconds=None):
         self.index, self.output, self.interval, self.zoom = index, output, interval, zoom
         self.sites, self.control_port, self.video_audio = sites, control_port, video_audio
         self.base = base or list(sites)  # the sites in config.toml
+        self.seconds = seconds or {}  # url -> its own time on screen, instead of interval
         self.port = 9222 + index
         self.profile = HOME / ".cache" / "kiosk" / f"screen{index}"
         self.proc = None
@@ -346,7 +357,11 @@ class Screen:
             log(f"screen {self.index}: tab for {label(self.sites[i])} was gone, reopening")
             self.tabs[i] = self.new_tab(self.sites[i])
             self.devtools(f"/json/activate/{self.tabs[i]}")
-        self.next_switch = time.monotonic() + self.interval
+        self.next_switch = time.monotonic() + self.slot(i)
+
+    def slot(self, i):
+        """Seconds site i stays up: its own `seconds`, else the screen's interval."""
+        return self.seconds.get(self.sites[i], self.interval)
 
     def loop(self):
         while True:
@@ -425,7 +440,7 @@ class Screen:
                 if self.temp is not None:
                     self.show(self.current)
                 elif self.player is None:
-                    self.next_switch = time.monotonic() + self.interval
+                    self.next_switch = time.monotonic() + self.slot(self.current)
             else:
                 return "unknown command"
 
@@ -490,6 +505,32 @@ def load_code(cfg):
     return code
 
 
+def pi_state(host, public_urls, screens):
+    return {"host": host, "peers": public_urls, "screens": [s.state() for s in screens]}
+
+
+def run_command(screens, i, action, query, data, via=None):
+    """Run /api/screen/<i>/<action>[?site=<n>] with JSON body `data` ({"url": ...} for
+    show/add/remove), from the control server or the relay server. Returns (status,
+    error payload), or (200, None) when it worked: the caller replies with pi_state()."""
+    if i >= len(screens):
+        return 404, {"error": "no such screen"}
+    site = urllib.parse.parse_qs(query).get("site", [None])[0]
+    url = data.get("url") if isinstance(data, dict) else None
+    if url is not None and action != "remove":  # remove names an existing entry as-is
+        url = clean_url(url)
+        if url is None:
+            return 400, {"error": "that isn't a web address"}
+    log(f"control: {action} {url or site or ''} on screen {i}" + (f" (via {via})" if via else ""))
+    try:
+        error = screens[i].command(action, int(site) if site and site.isdigit() else None, url)
+    except OSError as e:
+        error = f"browser didn't respond ({e})"
+    if error:
+        return 409, {"error": error}
+    return 200, None
+
+
 def make_handler(cfg, host, screens):
     code = load_code(cfg)
     public_urls = [u.rstrip("/") for u in cfg.get("public_urls", [])]
@@ -517,9 +558,6 @@ def make_handler(cfg, host, screens):
             self.reply(403, {"error": "wrong access code"})
             return False
 
-        def state(self):
-            return {"host": host, "peers": public_urls, "screens": [s.state() for s in screens]}
-
         def do_OPTIONS(self):  # CORS preflight from the page on the other Pi
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -536,7 +574,7 @@ def make_handler(cfg, host, screens):
                 self.reply(200, status_html(host, screens[0].control_port, public_urls), "text/html")
             elif path == "/api/state":
                 if self.authorized():
-                    self.reply(200, self.state())
+                    self.reply(200, pi_state(host, public_urls, screens))
             elif (m := re.fullmatch(r"/api/screen/(\d+)/shot\.jpg", path)) and int(m[1]) < len(screens):
                 if self.authorized():
                     shot = screens[int(m[1])].snapshot()
@@ -552,34 +590,89 @@ def make_handler(cfg, host, screens):
                 return self.reply(404, {"error": "not found"})
             if not self.authorized():
                 return
-            i = int(p[2])
-            if i >= len(screens):
-                return self.reply(404, {"error": "no such screen"})
-            site = urllib.parse.parse_qs(parts.query).get("site", [None])[0]
-            url = None
+            data = None
             length = int(self.headers.get("Content-Length") or 0)
             if 0 < length <= 4096:
                 try:
-                    url = json.loads(self.rfile.read(length)).get("url")
-                except (ValueError, AttributeError):
+                    data = json.loads(self.rfile.read(length))
+                except ValueError:
                     pass
-            if url is not None and p[3] != "remove":  # remove names an existing entry as-is
-                url = clean_url(url)
-                if url is None:
-                    return self.reply(400, {"error": "that isn't a web address"})
-            log(f"control: {p[3]} {url or site or ''} on screen {i}")
-            try:
-                error = screens[i].command(p[3], int(site) if site and site.isdigit() else None, url)
-            except OSError as e:
-                error = f"browser didn't respond ({e})"
-            if error:
-                return self.reply(409, {"error": error})
-            self.reply(200, self.state())
+            status, payload = run_command(screens, int(p[2]), p[3], parts.query, data)
+            self.reply(status, payload or pi_state(host, public_urls, screens))
 
         def log_message(self, *args):
             pass
 
     return Control
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):  # a redirect would carry the Pi key elsewhere: fail instead
+        return None
+
+
+NO_REDIRECTS = urllib.request.build_opener(_NoRedirect)
+
+
+def uplink(cfg, host, screens, public_urls, stop=None):
+    """Keep this Pi connected to the relay server (server_url) and run the phone commands
+    it passes on. The Pi only connects out; each sync carries the answers to the last one.
+    Setting `stop` (a threading.Event; only the tests use it) ends the loop."""
+    stop = stop or threading.Event()
+    server_url = cfg["server_url"].rstrip("/")
+    headers = {"Content-Type": "application/json", "X-Pi-Key": str(cfg.get("server_pi_key", ""))}
+    if cfg.get("server_lab_token"):
+        headers["X-Lab-Token"] = str(cfg["server_lab_token"])
+    results, wanted, shot_sent = [], [], {}
+    delay, down, reasons = 1, True, set()
+    while not stop.is_set():
+        shots = {}
+        for i in wanted:  # previews a phone is looking at, each at most every 2 s
+            if ((i not in shot_sent or time.monotonic() - shot_sent[i] >= 2)
+                    and (shot := screens[i].snapshot())):
+                shots[str(i)] = base64.b64encode(shot).decode()
+                shot_sent[i] = time.monotonic()
+        body = json.dumps({"host": host, "state": pi_state(host, public_urls, screens),
+                           "results": results, "shots": shots}).encode()
+        started = time.monotonic()
+        try:
+            req = urllib.request.Request(server_url + "/pi/sync", body, headers, method="POST")
+            with NO_REDIRECTS.open(req, timeout=30) as r:
+                reply = json.loads(r.read())
+            requests = [q for q in reply.get("requests") or [] if isinstance(q, dict)]
+            wanted = [i for i in reply.get("want_shots") or []
+                      if type(i) is int and 0 <= i < len(screens)]
+        except Exception as e:  # can't connect, timed out, an HTTP error, or not a sync reply
+            refused = isinstance(e, urllib.error.HTTPError) and e.code == 403
+            reason = (str(e) if isinstance(e, urllib.error.HTTPError)
+                      else str(getattr(e, "reason", "") or e) or type(e).__name__)
+            if reason not in reasons:
+                reasons.add(reason)
+                log("uplink: the server refused this Pi's key" if refused
+                    else f"uplink: can't reach {server_url} ({reason}), retrying")
+            down, wanted = True, []  # results are kept for the next sync
+            delay = 60 if refused else delay
+            stop.wait(delay)
+            delay = min(delay * 2, 60)
+            continue
+        if down:
+            log(f"uplink: connected to {server_url}")
+        down, delay, reasons, results = False, 1, set(), []
+        for q in requests:
+            m = re.fullmatch(r"/api/screen/(\d+)/([a-z]{1,20})", str(q.get("path")))
+            status, payload = 404, {"error": "not found"}
+            if q.get("method") == "POST" and m:
+                try:
+                    status, payload = run_command(screens, int(m[1]), m[2], str(q.get("query") or ""),
+                                                  q.get("body"), via="server")
+                except Exception as e:  # the control server would drop the connection
+                    log(f"uplink: {m[2]} on screen {m[1]} failed: {e!r}")
+                    status, payload = 500, {"error": f"the Pi couldn't do that ({e})"}
+            results.append({"id": q.get("id"), "status": status,
+                            "body": payload or pi_state(host, public_urls, screens)})
+        del results[:-20]
+        if not requests:  # the server holds each sync ~2 s; one that doesn't mustn't make this spin
+            stop.wait(max(0.0, 0.5 - (time.monotonic() - started)))
 
 
 def status_html(host, port, public_urls=()):
@@ -604,12 +697,19 @@ def main():
         for s in screens:
             print(f"{host} screen {s.index}: {s.output}, {len(s.sites)} sites, "
                   f"every {s.interval:g} s, zoom {s.zoom:g}")
+            for url, sec in s.seconds.items():
+                print(f"  {label(url)}: {sec:g} s")
             if s.sites != s.base:
                 print(f"  changed from the phone page (sites.json): {len(s.sites)} sites now")
             for site in filter(is_video, s.sites):
                 path = video_path(site)
                 print(f"  {label(site)}: " + (video_codec(path) or "unreadable") if path.exists()
                       else f"  WARNING: {path} is missing; it will be skipped")
+        if cfg.get("server_url"):
+            print(f"server: {cfg['server_url']} (Pi key {'set' if cfg.get('server_pi_key') else 'NOT set'}, "
+                  f"lab token {'set' if cfg.get('server_lab_token') else 'not set'})")
+        else:
+            print("server: off")
         return
     if cmd == "write-configs":
         write_configs(screens)
@@ -623,6 +723,9 @@ def main():
     log(f"control server on port {screens[0].control_port}")
     for s in screens:
         threading.Thread(target=s.loop, daemon=True).start()
+    if cfg.get("server_url"):
+        public_urls = [u.rstrip("/") for u in cfg.get("public_urls", [])]
+        threading.Thread(target=uplink, args=(cfg, host, screens, public_urls), daemon=True).start()
     session = int(os.environ.get("KIOSK_SESSION_PID", "0"))
     while True:
         time.sleep(2)

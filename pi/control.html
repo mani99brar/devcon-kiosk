@@ -40,7 +40,14 @@
   let code = load();
   // a team link carries the code after "#c=": keep it on this phone and drop it from the address bar
   const fromLink = new URLSearchParams(location.hash.slice(1)).get("c");
-  if (fromLink) { code = fromLink; save(code); history.replaceState(null, "", location.pathname); }
+  if (fromLink) { code = fromLink; save(code); history.replaceState(null, "", location.pathname + location.search); }
+  // the relay server's team link has "?lab_token=" for its proxy: it goes on every request to
+  // this page's own server, never to another one (the Funnel links)
+  const labToken = new URLSearchParams(location.search).get("lab_token");
+  function withToken(url) {
+    if (!labToken || !url.startsWith("/") || new URL(url, location.href).origin !== location.origin) return url;
+    return url + (url.includes("?") ? "&" : "?") + "lab_token=" + encodeURIComponent(labToken);
+  }
 
   const inputs = {};  // kept across refreshes so a half-typed link survives
   const shots = {};   // preview <img> per screen, also kept across refreshes
@@ -48,7 +55,7 @@
   async function api(base, path, method = "GET", body) {
     const opts = { method, headers: { "X-Code": code } };
     if (body) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
-    const r = await fetch(base + path, opts);
+    const r = await fetch(withToken(base + path), opts);
     if (r.status === 403 && !base) { code = ""; save(""); showLogin("Wrong access code"); throw new Error("code"); }
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || r.statusText);
@@ -131,7 +138,7 @@
   async function updateShot(img, base, index) {
     if (document.hidden) return;
     try {
-      const r = await fetch(`${base}/api/screen/${index}/shot.jpg`, { headers: { "X-Code": code } });
+      const r = await fetch(withToken(`${base}/api/screen/${index}/shot.jpg`), { headers: { "X-Code": code } });
       if (!r.ok) return;
       const old = img.src;
       img.src = URL.createObjectURL(await r.blob());
@@ -148,14 +155,18 @@
       if (e.message !== "code") document.getElementById("err").textContent = `Can't reach this Pi: ${e.message}`;
       return;
     }
-    const peers = (own.peers || []).filter((u) => new URL(u).origin !== location.origin);
-    const results = await Promise.all(peers.map((u) =>
-      api(u, "/api/state").then((st) => ({ base: u, state: st }), () => ({ base: u, state: null }))));
+    // served by the relay server ("hub"), every Pi goes through it; served by a Pi, the other
+    // Pis are reached on their own Funnel links
+    const others = own.hub ? (own.pis || []).map((p) => ({ base: p.base, name: p.host }))
+      : (own.peers || []).filter((u) => new URL(u).origin !== location.origin)
+          .map((u) => ({ base: u, name: new URL(u).hostname.split(".")[0] }));
+    const results = await Promise.all(others.map((o) =>
+      api(o.base, "/api/state").then((st) => ({ ...o, state: st }), () => ({ ...o, state: null }))));
     const root = document.getElementById("hosts");
     root.replaceChildren();
     const seen = new Set();
-    for (const { base, state } of [{ base: "", state: own }, ...results]) {
-      if (!state) { root.append(el("h1", new URL(base).hostname.split(".")[0]), el("p", "Not reachable right now", "off")); continue; }
+    for (const { base, name, state } of own.hub ? results : [{ base: "", state: own }, ...results]) {
+      if (!state) { root.append(el("h1", name), el("p", "Not reachable right now", "off")); continue; }
       if (seen.has(state.host)) continue;
       seen.add(state.host);
       renderHost(root, base, state);

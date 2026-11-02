@@ -13,5 +13,8 @@ ssh "${sshopts[@]}" "${KIOSK_USER:-kiosk}@$host" '
   uptime
   echo "labwc: $(pgrep -x labwc >/dev/null && echo running || echo NOT running)"
   echo "chromium processes: $(pgrep -c chromium || true)"
+  echo "--- tailscale (this Pi)"; tailscale status --peers=false 2>&1
+  echo "--- last tailscale watchdog lines"
+  sudo journalctl -t kiosk-tailscale-watchdog -n 3 --no-pager 2>&1
   echo "--- last kiosk log lines"; tail -n 8 ~/kiosk/kiosk.log 2>/dev/null || echo "(no log yet)"
 '

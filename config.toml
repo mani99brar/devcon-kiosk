@@ -12,22 +12,22 @@ video_audio = false      # true sends video sound to the TV over HDMI
 
 [[pi.kleros1.screen]]
 output = "HDMI-A-1"      # HDMI0, the port next to the USB-C power port
+interval = 60            # seconds per web page unless the entry sets its own; videos always play to the end
 sites = [
-  "https://example.com",                      # placeholder
-  "https://www.raspberrypi.com",              # placeholder
-  "https://time.is",                          # placeholder
-  "https://duckduckgo.com/?q=devcon&ia=web",  # placeholder (tests a query string)
-  "video:test-1080p60-h264.mp4",              # TEST clip, remove before the event
-  "video:test-4k60-hevc.mp4",                 # TEST clip, remove before the event
+  "video:Kleros_Devcon8_Booth_Screen1_Enterprise-AgentCourt-Escrow_v27_1080p_master.mp4",
+  { url = "file:///home/kiosk/kiosk/pages/kleros-agentic-court-loop.html", seconds = 241 },  # its full 14-scene loop; pages/ is copied by deploy.sh
+  "video:Kleros_Devcon8_Booth_Screen2_Curate-Scout-Oracle_v27_1080p_master.mp4",
+  "https://devcon-foresight.netlify.app/",
 ]
 
 [[pi.kleros2.screen]]
 output = "HDMI-A-1"
-interval = 30            # each screen can override interval and zoom
+interval = 60            # seconds per web page unless the entry sets its own; videos always play to the end
 sites = [
-  "https://en.wikipedia.org/wiki/Raspberry_Pi",  # placeholder
-  "https://example.org",                         # placeholder
-  "https://time.is",                             # placeholder
+  "video:Kleros_Devcon8_Booth_Screen2_Curate-Scout-Oracle_v27_1080p_master.mp4",
+  { url = "file:///home/kiosk/kiosk/pages/kleros-agentic-court-loop.html", seconds = 241 },  # its full 14-scene loop; pages/ is copied by deploy.sh
+  "video:Kleros_Devcon8_Booth_Screen1_Enterprise-AgentCourt-Escrow_v27_1080p_master.mp4",
+  "https://devcon-foresight.netlify.app/",
 ]
 
 # Second TV on the same Pi (the earlier 1-Pi/2-TV layout; not tested):

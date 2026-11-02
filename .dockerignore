@@ -1,0 +1,5 @@
+# The build context is the repo root: send only what the image needs
+# (never secret.toml, .env, videos or shots).
+*
+!server/app.py
+!pi/control.html

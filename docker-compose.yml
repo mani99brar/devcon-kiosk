@@ -1,0 +1,22 @@
+# The kiosk relay server: see server/README.md. ./start.sh, ./stop.sh, ./destroy.sh.
+services:
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    env_file: .env
+    user: "${APP_UID}:${APP_GID}"
+    # one app on both ports, so any split of paths between them works
+    ports:
+      - "127.0.0.1:18080:8000"
+      - "127.0.0.1:18081:8000"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

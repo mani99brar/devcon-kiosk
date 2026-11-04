@@ -189,6 +189,11 @@ The page is used one-handed on a phone at a busy booth, by ~10 teammates. Goals:
   page shows "Close tab" with Back / Forward / Reload and in the full-screen keys only then, so a Pi that doesn't
   send `closable` never shows it. Tabs kiosk.py closes are remembered until Chromium stops listing them (it can
   for a few ms after "Target is closing"), so `follow_tabs` never takes one for a new tab.
+- **No wrong picture after a switch** (DM 3327). The relay shows a new watcher its stored preview at once only
+  if it is at most 2 s old (`REPLAY_MAX_AGE`; older means nobody was watching and the TV may have moved on).
+  The page drops a `shot.jpg` answer once the WebSocket took over or a newer request went out, and clears the
+  picture while it is hidden. (The flash on the TVs themselves, between two videos, is fixed in kiosk.py's
+  video handover: see CLAUDE.md's gotchas.)
 
 ## Tests
 

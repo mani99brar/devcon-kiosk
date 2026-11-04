@@ -31,6 +31,8 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "pi"))
 import kiosk  # noqa: E402
 
+REAL_PLAY = kiosk.Screen.play  # the tests below swap in a fake mpv; VideoHandover uses the real one
+
 try:
     import websockets
     from websockets.sync.server import serve
@@ -638,6 +640,186 @@ class CloseTab(PiTest):
             self.assertEqual((s.popups, s.closed), ([], {first}))
             self.follow()
             self.assertEqual(s.closed, set())
+
+
+class FakeTv:
+    """What the TV shows: the newest mpv window still open, else Chromium's tab in front (a
+    new window goes on top, as labwc does). seen: each change, in order."""
+
+    def __init__(self):
+        self.screen, self.mpvs, self.seen = None, [], []
+
+    def top(self):
+        up = [m for m in self.mpvs if m.returncode is None]
+        return up[-1].video if up else self.screen.showing
+
+    def look(self):
+        if self.screen is not None and (not self.seen or self.seen[-1] != self.top()):
+            self.seen.append(self.top())
+
+    def popen(self, args, **kwargs):
+        assert args[0] == "mpv", args
+        self.mpvs.append(FakeMpv(self, args))
+        self.look()
+        return self.mpvs[-1]
+
+
+class FakeMpv:
+    def __init__(self, tv, args):
+        self.tv, self.args, self.video, self.returncode = tv, args, Path(args[-1]).name, None
+
+    def poll(self):
+        return self.returncode
+
+    def end_of_video(self):
+        """Its last frame: mpv exits there, unless --keep-open=yes keeps that frame up."""
+        if "--keep-open=yes" not in self.args:
+            self.exit(0)
+
+    def exit(self, code):
+        if self.returncode is None:
+            self.returncode = code
+            self.tv.look()
+
+    def terminate(self):
+        self.exit(-15)
+
+    kill = terminate
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+class VideoHandover(PiTest):
+    """3 Nov (DM 3327): "flashes in the rotation and it flashes a wrong preview". mpv closed at
+    a video's end and the next one took a moment to come up, so between two videos the TV (and
+    a preview taken then, with grim) showed the browser's page behind them."""
+    SITES = ["https://example.org", "video:a.mp4", "video:b.mp4", "https://example.net/page"]
+    seconds = 30.0  # what ffprobe says
+
+    def setUp(self):
+        super().setUp()
+        self.tv, tmp = FakeTv(), tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.runs = []
+
+        def devtools(s, path, method="GET"):
+            out = self.chromium.http(s, path, method)
+            if path.startswith("/json/activate/"):
+                self.tv.look()
+            return out
+
+        def run(args, **kwargs):  # grim shows what is on the TV; ffmpeg passes it through
+            self.runs.append(args[0])
+            out = {"grim": b"grim " + self.tv.top().encode(), "ffmpeg": kwargs.get("input")}.get(args[0], b"")
+            return subprocess.CompletedProcess(args, 0, stdout=out, stderr=b"")
+        for p in (mock.patch.object(kiosk.Screen, "play", REAL_PLAY),
+                  mock.patch.object(kiosk.Screen, "devtools", devtools),
+                  mock.patch.object(kiosk, "video_codec", lambda path: "h264"),
+                  mock.patch.object(kiosk, "video_seconds", lambda path: self.seconds),
+                  mock.patch.object(kiosk, "HERE", Path(tmp.name)),  # mpv0.log
+                  mock.patch.object(kiosk.subprocess, "Popen", self.tv.popen),
+                  mock.patch.object(kiosk.subprocess, "run", run)):
+            p.start()
+            self.addCleanup(p.stop)
+        self.chromium.tabs.clear()
+        self.screen = self.tv.screen = make_screen(sites=self.SITES)
+
+    def tick(self):
+        with self.screen.lock:  # one turn of loop()
+            self.screen.tick()
+
+    def start(self, site):
+        self.run_command("jump", query=f"site={site}")
+        self.tv.seen = []
+        self.tv.look()
+
+    def video_ends(self):
+        self.tv.mpvs[-1].end_of_video()
+
+    def time_is_up(self):
+        self.screen.next_switch = min(self.screen.next_switch, time.monotonic())
+        self.tick()
+
+    def test_no_page_between_two_videos(self):
+        s = self.screen
+        self.start(1)
+        self.assertAlmostEqual(s.next_switch, time.monotonic() + 30 + kiosk.MPV_START, delta=0.5)  # at its end
+        self.video_ends()
+        self.assertEqual(s.capture(), b"grim a.mp4")  # its last frame, not the page behind it
+        self.time_is_up()
+        self.assertEqual(self.tv.seen, ["a.mp4", "b.mp4"])  # before: a.mp4, https://example.org, b.mp4
+        a, b = self.tv.mpvs
+        self.assertEqual((s.current, s.player, a.returncode), (2, b, None))  # a stays under b for now
+        self.assertIn("--keep-open=yes", b.args)
+        self.assertEqual(s.capture(), b"grim b.mp4")
+        self.tick()
+        self.assertIsNone(a.returncode)  # HANDOVER not over yet
+        s.leaving = [(p, 0) for p, _ in s.leaving]  # it is now
+        self.tick()
+        self.assertEqual((a.returncode, b.returncode, s.leaving, self.tv.seen), (-15, None, [], ["a.mp4", "b.mp4"]))
+        self.assertTrue(self.logged("playing b.mp4 (CPU decode, 30 s)"))
+
+    def test_next_from_a_video_to_a_video(self):
+        self.start(1)
+        self.run_command("next")
+        self.assertEqual(self.tv.seen, ["a.mp4", "b.mp4"])
+        self.assertIsNone(self.tv.mpvs[0].returncode)
+
+    def test_a_page_is_in_front_before_the_video_goes(self):
+        self.start(2)
+        self.video_ends()
+        self.time_is_up()
+        self.assertEqual(self.tv.seen, ["b.mp4", "https://example.net/page"])  # not example.org first
+        self.assertEqual([m.returncode for m in self.tv.mpvs], [-15])
+        self.start(2)
+        self.run_command("next")
+        self.assertEqual(self.tv.seen, ["b.mp4", "https://example.net/page"])
+        self.assertEqual([m.returncode for m in self.tv.mpvs], [-15, -15])
+
+    def test_a_paused_video_repeats_over_its_last_frame(self):
+        s = self.screen
+        self.start(1)
+        self.run_command("pause")
+        self.video_ends()
+        self.time_is_up()
+        self.assertEqual((s.current, [m.video for m in self.tv.mpvs], self.tv.seen), (1, ["a.mp4", "a.mp4"], ["a.mp4"]))
+        self.assertIsNone(self.tv.mpvs[0].returncode)  # its last frame, under the new start
+
+    def test_length_unknown_moves_on_when_mpv_exits(self):
+        self.seconds = None  # no ffprobe, or it can't tell: as before
+        s = self.screen
+        self.start(1)
+        self.assertIn("--keep-open=no", self.tv.mpvs[0].args)
+        self.assertEqual(s.next_switch, float("inf"))
+        self.video_ends()
+        self.tick()
+        self.assertEqual((s.current, [m.video for m in self.tv.mpvs]), (2, ["a.mp4", "b.mp4"]))
+        self.assertTrue(self.logged("playing a.mp4 (CPU decode, length unknown)"))
+
+    def test_stopping_stops_the_video_kept_up_too(self):
+        s = self.screen
+        self.start(1)
+        self.run_command("next")  # b over a
+        self.run_command("show", {"url": "kleros.io"})
+        self.assertEqual(([m.returncode for m in self.tv.mpvs], s.leaving, s.player), ([-15, -15], [], None))
+        self.assertEqual(self.tv.seen, ["a.mp4", "b.mp4", "https://kleros.io"])  # the new tab, then no video
+        self.start(1)
+        self.run_command("next")
+        s.kill()
+        self.assertEqual(([m.returncode for m in self.tv.mpvs[2:]], s.leaving), ([-15, -15], []))
+
+
+
+class VideoSeconds(unittest.TestCase):
+    def test_video_seconds(self):
+        for out, want in (("30.033000\n", 30.033), ("12.5,\n", 12.5), ("N/A\n", None), ("", None),
+                          ("0.000000\n", None), ("inf\n", None), ("nan\n", None)):
+            with mock.patch.object(kiosk.subprocess, "run",
+                                   lambda args, **kw: subprocess.CompletedProcess(args, 0, stdout=out, stderr="")):
+                self.assertEqual(kiosk.video_seconds(Path("x.mp4")), want, out)
+        with mock.patch.object(kiosk.subprocess, "run", mock.Mock(side_effect=FileNotFoundError)):
+            self.assertIsNone(kiosk.video_seconds(Path("x.mp4")))
 
 
 class Previews(PiTest):

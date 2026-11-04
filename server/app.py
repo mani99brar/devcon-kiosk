@@ -45,6 +45,9 @@ OFFLINE_AFTER = 10  # s without a sync before a Pi counts as offline
 REPLY_TIMEOUT = 15  # s a phone command waits for the Pi's answer
 WANT_FOR = 10  # s a preview counts as wanted after a phone asked for it
 SHOT_MAX_AGE = 15  # s a stored preview is still served
+# s a stored preview is still shown at once to a phone that starts watching: an older one means
+# nobody was watching, so the TV may have moved on since (a fresh one comes within a second)
+REPLAY_MAX_AGE = 2
 WRONG_AUTH_DELAY = 1  # s, slows down guessing
 MAX_SYNC_BODY = 4 * 1024 * 1024
 MAX_COMMAND_BODY = 4096
@@ -598,7 +601,7 @@ def phone_watch(ws, msg, watching):
             watching.add((h, i))
             viewers.add(ws)
             shot = h.shots.get(i)
-            if shot and time.monotonic() - shot[1] <= SHOT_MAX_AGE:  # something to show at once
+            if shot and time.monotonic() - shot[1] <= REPLAY_MAX_AGE:  # something to show at once
                 ws.put_preview((h.name, i), preview_frame(h.name, i, shot[0]))
         else:
             watching.discard((h, i))

@@ -61,6 +61,10 @@ Devcon booth. **The event starts 4 Nov 2026.** README.md is the runbook; `docs/s
 - The kiosk only draws on `HDMI-A-1` = the micro-HDMI port next to the USB-C power port; the other port shows black.
 - The 4K HEVC Agentic Court loop flashed on a Mi TV (Manmeet's hotel room test, kleros2) with hardware decode (drm + dmabuf-wayland), so the rotation
   uses the 1080p H.264 loop (~9% CPU); the Pis output 1080p anyway.
+- A different flash (3 Nov): mpv closed at a video's end and the next took a moment to start, so the browser's page
+  showed between two videos (and in previews). Now mpv runs `--keep-open=yes` when ffprobe knows the length, the
+  next video starts over the last frame, and the old one stops `HANDOVER` s later; a page is put in front before a
+  video stops. Don't go back to stopping the video first.
 - `deploy.sh` mirrors `videos/` and `pages/` with `--delete` and refuses to run if a file `config.toml` uses is
   missing locally, so a clone without media can't wipe the Pis. Pages are `file:///home/kiosk/kiosk/pages/<file>`.
 

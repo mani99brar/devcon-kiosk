@@ -34,7 +34,7 @@ async function boot(href, routes, opts = {}) {
   const els = { login: mk("form"), loginErr: mk("p"), code: mk("input"), hosts: mk("div"), toast: mk("div"),
     conn: mk("span"), logout: mk("button"), pick: mk("nav") };
   els.login.hidden = els.logout.hidden = els.conn.hidden = els.pick.hidden = true;
-  const docOn = {}, fullscreen = [];
+  const docOn = {}, fullscreen = [], held = [];  // held: opts.holdShots, shot.jpg answers waiting for held[i]()
   // a browser with the Fullscreen API (opts.noFullscreen: an iPhone, without it)
   const document = { getElementById: (id) => els[id], createElement: mk, hidden: false, fullscreenElement: null,
     addEventListener: (t, f) => { docOn[t] = f; } };
@@ -67,7 +67,7 @@ async function boot(href, routes, opts = {}) {
   }
 
   const flat = (n) => [has(n, "name") || has(n, "off") ? n.textContent : null, ...n.children.flatMap(flat)].filter(Boolean);
-  const env = { fetched, posts, replaced, sockets, confirms, revoked, blobs, store, els, tick, settle, routes,
+  const env = { fetched, posts, replaced, sockets, confirms, revoked, blobs, store, els, tick, settle, routes, held,
     confirmAnswer: true, failWs: !!opts.failWs,
     get rendered() { return flat(els.hosts); },
     // the Pi picker in the header: "host kind[ pressed]" per button, and a button by host
@@ -93,6 +93,7 @@ async function boot(href, routes, opts = {}) {
     const method = o.method || "GET";
     fetched.push(url);
     if (env.gate) await env.gate;
+    if (opts.holdShots && url.includes("shot.jpg")) await new Promise((go) => held.push(go));
     if (method === "POST") posts.push({ url, body: o.body === undefined ? undefined : JSON.parse(o.body), code: o.headers["X-Code"] });
     const abs = new URL(url, u.href);
     const key = (abs.origin === u.origin ? "" : abs.origin) + abs.pathname;
@@ -546,6 +547,45 @@ const cases = [
     const old = await boot(PI, { "/api/state": [200, JSON_TYPE, st("kleros1", { paused: true, temp: "x.example" })] });
     return same(r.posts, [{ url: "/api/screen/0/closetab", body: undefined, code: "saved-code-0123456789" }])
       && old.btn("Close the tab on the TV").hidden && old.btn("Close the tab on the TV (full screen)").hidden;
+  }],
+
+  // follow-up (3 Nov, DM 3327): wrong pictures flashing up
+  ["a picture asked over HTTP that answers after the WebSocket took over doesn't replace the live one", TEAM, hubBoth, async (r) => {
+    const img = r.find((x) => x.tag === "img");
+    const asked = r.held.length === 1 && img.src === "";  // the first poll's shot.jpg, still on its way
+    const ws = await r.live({ kleros1: st("kleros1"), kleros2: st("kleros2") });
+    ws.push(frame("kleros1", 0, [0xff, 0xd8, 0xff, 0xd9]));
+    const live = img.src;
+    r.held[0]();  // the old picture arrives now
+    await r.settle();
+    return asked && live.startsWith("blob:") && img.src === live && r.blobs.length === 1;
+  }, { holdShots: true }],
+  ["polling: an older picture that answers after a newer one is dropped", TEAM, hubBoth, async (r) => {
+    await r.tick(3000);  // the next poll asks again (the WebSocket keeps failing)
+    const img = r.find((x) => x.tag === "img");
+    const two = r.held.length === 2;
+    r.held[1]();
+    await r.settle();
+    const newer = img.src;
+    r.held[0]();  // the first answer, late
+    await r.settle();
+    return two && newer.startsWith("blob:") && img.src === newer && r.blobs.length === 1;
+  }, { holdShots: true, failWs: true }],
+  ["hidden page: the picture is cleared, so coming back never shows what the TV had then", TEAM, hub, async (r) => {
+    const ws = await r.live({ kleros1: st("kleros1") });
+    const img = r.find((x) => x.tag === "img");
+    ws.push(frame("kleros1", 0, [0xff, 0xd8, 0xff, 0xd9]));
+    const old = img.src;
+    r.setHidden(true);
+    const cleared = img.src === "" && r.revoked.includes(old);
+    r.setHidden(false);
+    const blank = img.src === "";  // until the next picture
+    ws.push(frame("kleros1", 0, [0xff, 0xd8, 1, 0xff, 0xd9]));
+    const poll = await boot(PI, { ...pi, "/api/screen/0/shot.jpg": [200, "image/jpeg", "jpeg"] });  // polling too
+    const pimg = poll.find((x) => x.tag === "img"), had = pimg.src;
+    poll.setHidden(true);
+    return old.startsWith("blob:") && cleared && blank && img.src.startsWith("blob:") && img.src !== old
+      && had.startsWith("blob:") && pimg.src === "";
   }],
 ];
 

@@ -51,6 +51,10 @@ STATE_EVERY = 10  # seconds between state messages over the WebSocket when nothi
 PREVIEW_GAP = 0.25  # at most 4 previews a second per screen over the WebSocket
 PREVIEW_WIDTH = 768  # pixels, for DevTools previews (grim's -s 0.4 of 1920)
 CDP_TIMEOUT = 3  # seconds for each step of a DevTools WebSocket operation
+# seconds a video stays up under the next one, so the TV never shows the browser between two
+# videos while the next mpv starts (it closed at its end before: the page behind flashed up)
+HANDOVER = 3
+MPV_START = 1  # seconds mpv may take to show a video: the switch waits this long past its length
 BROWSE = ("click", "scroll", "type", "key", "back", "forward", "reload")  # phone browsing
 KEYS = {"Enter": 13, "Backspace": 8, "Tab": 9, "Escape": 27, "ArrowLeft": 37, "ArrowUp": 38,
         "ArrowRight": 39, "ArrowDown": 40}  # the keys the phone can press: windowsVirtualKeyCode
@@ -80,7 +84,6 @@ MPV_FLAGS = [
     "--osd-level=0",
     "--no-input-default-bindings",
     "--cursor-autohide=always",
-    "--keep-open=no",
     "--no-terminal",
 ]
 # Pi 5 decodes only HEVC in hardware, and that needs the zero-copy output;
@@ -203,6 +206,18 @@ def video_codec(path):
     except FileNotFoundError:  # ffprobe not installed yet (first deploy)
         return ""
     return out.stdout.strip().split(",")[0]  # some files add empty csv columns ("h264,")
+
+
+def video_seconds(path):
+    """The video's length in seconds, or None when ffprobe can't tell."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True)
+        seconds = float(out.stdout.strip().split(",")[0])
+    except (FileNotFoundError, ValueError):  # not installed yet, or "N/A"
+        return None
+    return seconds if 0 < seconds < float("inf") else None
 
 
 def label(url):
@@ -334,6 +349,14 @@ def page_picture(page):
     return base64.b64decode(frame["data"])
 
 
+def end_process(p):
+    p.terminate()
+    try:
+        p.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        p.kill()
+
+
 class Screen:
     def __init__(self, index, output, interval, zoom, sites, control_port, video_audio=False,
                  base=None, seconds=None):
@@ -345,6 +368,7 @@ class Screen:
         self.profile = HOME / ".cache" / "kiosk" / f"screen{index}"
         self.proc = None
         self.player = None
+        self.leaving = []  # (mpv, when to stop it): videos kept up under the next one (HANDOVER)
         self.tabs = []
         self.temp = None  # (tab id, url) put up with "Show now"; closed on the next switch
         # tabs a page opened on top of ours (a target=_blank link, window.open), newest last;
@@ -457,15 +481,25 @@ class Screen:
         return True
 
     def play(self, site):
+        """Start a video on top. One already up stays under it for HANDOVER s, until the new
+        window is surely up. Sets next_switch: the video's end (with MPV_START to spare, so its
+        end isn't cut; mpv stays on its last frame meanwhile) when ffprobe knows its length,
+        else never (loop() moves on when mpv exits)."""
         path = video_path(site)
         hevc = video_codec(path) == "hevc"
+        seconds = video_seconds(path)
         args = ["mpv", f"--wayland-app-id=kiosk-video-{self.index}", *MPV_FLAGS,
-                *(MPV_HEVC if hevc else MPV_OTHER)]
+                f"--keep-open={'yes' if seconds else 'no'}", *(MPV_HEVC if hevc else MPV_OTHER)]
         if not self.video_audio:
             args.append("--no-audio")
-        mpv_log = open(HERE / f"mpv{self.index}.log", "w")
-        self.player = subprocess.Popen([*args, str(path)], stdout=mpv_log, stderr=mpv_log)
-        log(f"screen {self.index}: playing {path.name} ({'HEVC, hardware' if hevc else 'CPU'} decode)")
+        with open(HERE / f"mpv{self.index}.log", "w") as mpv_log:  # (mpv keeps its own copy)
+            player = subprocess.Popen([*args, str(path)], stdout=mpv_log, stderr=mpv_log)
+        if self.player is not None:
+            self.leaving.append((self.player, time.monotonic() + HANDOVER))
+        self.player = player
+        self.next_switch = time.monotonic() + MPV_START + seconds if seconds else float("inf")
+        log(f"screen {self.index}: playing {path.name} ({'HEVC, hardware' if hevc else 'CPU'} decode"
+            + (f", {seconds:.0f} s)" if seconds else ", length unknown)"))
 
     def close_temp(self):
         if self.temp is None:
@@ -484,14 +518,19 @@ class Screen:
             SITES_FILE.write_text(json.dumps(changes, indent=2) + "\n")
 
     def stop_video(self):
-        if self.player is None:
-            return
-        self.player.terminate()
-        try:
-            self.player.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            self.player.kill()
-        self.player = None
+        """Stop the video on screen, and any still kept up under it."""
+        players = [p for p, _ in self.leaving] + ([self.player] if self.player is not None else [])
+        self.player, self.leaving = None, []
+        for p in players:
+            end_process(p)
+
+    def retire(self):
+        """Stop the videos kept up under a newer one, once their HANDOVER is over."""
+        now = time.monotonic()
+        for p, until in self.leaving:
+            if until <= now:
+                end_process(p)
+        self.leaving = [(p, until) for p, until in self.leaving if until > now]
 
     def kill(self):
         self.stop_video()
@@ -538,9 +577,9 @@ class Screen:
         for t in status:
             self.devtools(f"/json/activate/{t}")
         time.sleep(max(0.0, STATUS_SECONDS - (time.monotonic() - started)))
-        for t in status:
-            self.devtools(f"/json/close/{t}")
         with self.lock:
+            for t in status:
+                self.close_tab(t)
             self.tabs = tabs
             self.show(0)
         log(f"screen {self.index}: rotating {len(tabs)} sites every {self.interval:g} s")
@@ -548,13 +587,12 @@ class Screen:
     def show(self, i):
         """Bring site i to the front. Caller holds self.lock."""
         i %= len(self.tabs)
-        self.stop_video()
         self.close_temp()
         self.close_popups()
         self.current = i
         if is_video(self.sites[i]):
-            self.play(self.sites[i])
-            self.next_switch = float("inf")  # loop() moves on when the video ends
+            self.next_switch = float("inf")  # play() sets the video's end when it knows it
+            self.play(self.sites[i])  # over the video before, if any (see play)
             return
         self.reset_tab(i)
         try:
@@ -565,6 +603,7 @@ class Screen:
             log(f"screen {self.index}: tab for {label(self.sites[i])} was gone, reopening")
             self.tabs[i] = self.new_tab(self.sites[i])
             self.devtools(f"/json/activate/{self.tabs[i]}")
+        self.stop_video()  # only now: the page is already in front behind the video
         self.next_switch = time.monotonic() + self.slot(i)
 
     def slot(self, i):
@@ -579,15 +618,7 @@ class Screen:
                         log(f"screen {self.index}: chromium exited ({self.proc.returncode}), restarting")
                     self.launch()
                 with self.lock:
-                    if self.player is not None and self.player.poll() is not None:
-                        self.player = None
-                        if self.paused:  # keep the paused video looping
-                            self.play(self.sites[self.current])
-                        else:
-                            self.show(self.current + 1)
-                    elif self.tabs and not self.paused and time.monotonic() >= self.next_switch:
-                        self.show(self.current + 1)
-                    self.follow_tabs()
+                    self.tick()
                 self.errors = 0
             except Exception as e:
                 self.errors += 1
@@ -598,6 +629,23 @@ class Screen:
                 time.sleep(5)
             time.sleep(0.5)
 
+    def tick(self):
+        """One turn of loop(): move on when the time is up or mpv exited, stop videos whose
+        handover is over, and keep up with Chromium's tabs. Caller holds self.lock."""
+        self.retire()
+        if self.player is not None and self.player.poll() is not None:  # no known length, or it failed
+            self.player = None
+            if self.paused:  # keep the paused video looping
+                self.play(self.sites[self.current])
+            else:
+                self.show(self.current + 1)
+        elif self.tabs and time.monotonic() >= self.next_switch:
+            if not self.paused:
+                self.show(self.current + 1)
+            elif self.player is not None:  # a paused video starts again, over its last frame
+                self.play(self.sites[self.current])
+        self.follow_tabs()
+
     def command(self, action, site=None, url=None):
         """Run a phone command. Returns an error message, or None."""
         with self.lock:
@@ -606,13 +654,13 @@ class Screen:
             if action in ("show", "add", "remove") and not url:
                 return "missing link"
             if action == "show":  # put a link up now, paused, without keeping it
-                self.stop_video()
                 self.close_temp()
                 self.close_popups()
                 tab = self.new_tab(url)
                 self.devtools(f"/json/activate/{tab}")
                 self.temp = (tab, url)
                 self.paused = True
+                self.stop_video()  # after: the new tab is in front behind the video
             elif action == "add":
                 if url not in self.sites:
                     self.sites.append(url)

@@ -788,6 +788,31 @@ class Together(WsTest):
         self.assertEqual((len(watcher.previews), len(late.previews)), (1, 1))
         self.assertEqual(other.previews, [])
 
+    def test_a_stale_stored_preview_is_not_shown_to_a_new_watcher(self):
+        """3 Nov (DM 3327): a phone that started watching got the stored preview at once, even
+        one from up to 15 s before: the TV could have moved on, so a wrong picture flashed."""
+        pi = self.pi()
+        first = self.phone()
+        first.state_of("kleros1")
+        first.watch("kleros1", 0)
+        pi.wait_want([0])
+        pi.preview(0, JPEG + b"old")
+        first.wait(lambda p: True, what="preview")
+        first.watch("kleros1", 0, on=False)
+        h = app.find_host("kleros1")
+        with h.cond:
+            jpeg, at = h.shots[0]
+            h.shots[0] = (jpeg, at - app.REPLAY_MAX_AGE - 1)  # nobody watched since
+        late = self.phone()
+        late.state_of("kleros1")
+        late.watch("kleros1", 0)
+        pi.wait_want([0])
+        time.sleep(0.3)
+        self.assertEqual(late.previews, [])  # not the old one
+        self.assertEqual(call("GET", "/api/pi/kleros1/api/screen/0/shot.jpg")[:2], (200, JPEG + b"old"))  # HTTP: as before
+        pi.preview(0, JPEG + b"new")
+        self.assertEqual(late.wait(lambda p: True, what="preview"), ("kleros1", 0, JPEG + b"new"))
+
     def test_slow_phone_gets_only_the_latest_preview(self):
         pi = self.pi()
         r = self.raw(rcvbuf=4096)

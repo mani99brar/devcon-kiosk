@@ -619,13 +619,17 @@
     if (old.startsWith("blob:")) URL.revokeObjectURL(old);
   }
 
+  // a picture over HTTP (polling). An answer that took long would put an older picture back: it is
+  // dropped if a newer request went out or the WebSocket's pictures took over meanwhile
   async function updateShot(c) {
     if (document.hidden) return;
+    const ask = c.shotAsk = (c.shotAsk || 0) + 1;
     try {
       const r = await fetch(withToken(`${c.base}/api/screen/${c.s.index}/shot.jpg`), { headers: { "X-Code": code } });
       if (!r.ok) return;
       const blob = await r.blob();
-      if (shown.includes(c)) setShot(c.img, blob);  // (unless someone switched to the other Pi meanwhile)
+      // (and unless someone switched to the other Pi, or the page was hidden, meanwhile)
+      if (shown.includes(c) && ask === c.shotAsk && !live && !document.hidden) setShot(c.img, blob);
     } catch (e) {}
   }
 
@@ -740,6 +744,9 @@
   }
 
   document.addEventListener("visibilitychange", () => {
+    // no pictures come while hidden, so coming back the card would show what the TV had then
+    // until a new one arrives: clear it instead, as a switch of Pi does
+    if (document.hidden) for (const c of shown) clearShot(c.img);
     if (live) watch();
     else if (!document.hidden && code && $("login").hidden) refresh();
   });

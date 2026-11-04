@@ -19,7 +19,7 @@ sites = [
   "video:Kleros_Devcon8_Booth_Screen1_Enterprise-AgentCourt-Escrow_v27_1080p_master.mp4",
   "video:kleros-agentic-court-loop-1080p.mp4",
   "video:Kleros_Devcon8_Booth_Screen2_Curate-Scout-Oracle_v27_1080p_master.mp4",
-  "https://devcon-foresight.netlify.app/",
+  { url = "https://devcon-foresight.netlify.app/", seconds = 90 },
 ]
 
 [[pi.kleros2.screen]]
@@ -27,7 +27,7 @@ output = "HDMI-A-1"
 interval = 60            # seconds per web page; videos play to the end (unless an entry sets its own `seconds`)
 sites = [
   "video:Kleros_Devcon8_Booth_Screen2_Curate-Scout-Oracle_v27_1080p_master.mp4",
-  "https://devcon-foresight.netlify.app/",
+  { url = "https://devcon-foresight.netlify.app/", seconds = 90 },
   "video:Kleros_Devcon8_Booth_Screen1_Enterprise-AgentCourt-Escrow_v27_1080p_master.mp4",
   "video:kleros-agentic-court-loop-1080p.mp4",
 ]

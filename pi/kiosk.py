@@ -8,8 +8,12 @@
 Sites are preloaded as tabs; rotation switches tabs over Chromium's local
 DevTools HTTP endpoint (127.0.0.1 only). A `video:<file>` entry plays
 ~/kiosk/videos/<file> once in mpv on top of the browser, then moves on.
-Links added or removed from the phone page are kept in sites.json, on top of
-config.toml, so they survive reboots and deploys. With server_url in
+An entry with its own length (config.toml `seconds`, or set from the phone)
+stays up that long, a video repeating or cut to fit; else a page stays for the
+screen's interval and a video plays to its end.
+Links added or removed from the phone page, and the lengths set there, are
+kept in sites.json, on top of config.toml, so they survive reboots and
+deploys. With server_url in
 secret.toml, an uplink thread also connects out to the relay server
 (server/app.py), over its WebSocket when it can and HTTP polling otherwise,
 and runs the phone commands sent there. Stdlib only, plus Debian's
@@ -55,6 +59,7 @@ CDP_TIMEOUT = 3  # seconds for each step of a DevTools WebSocket operation
 # videos while the next mpv starts (it closed at its end before: the page behind flashed up)
 HANDOVER = 3
 MPV_START = 1  # seconds mpv may take to show a video: the switch waits this long past its length
+LENGTHS = (5, 3600)  # seconds: the shortest and longest time on screen the phone can set
 BROWSE = ("click", "scroll", "type", "key", "back", "forward", "reload")  # phone browsing
 KEYS = {"Enter": 13, "Backspace": 8, "Tab": 9, "Escape": 27, "ArrowLeft": 37, "ArrowUp": 38,
         "ArrowRight": 39, "ArrowDown": 40}  # the keys the phone can press: windowsVirtualKeyCode
@@ -147,6 +152,9 @@ def load_config():
         c = changes.get(str(i), {})
         sites = ([u for u in base if u not in c.get("removed", [])]
                  + [u for u in c.get("added", []) if u not in base])
+        set_here = c.get("seconds")  # lengths set from the phone, over config.toml's
+        custom = {u: float(n) for u, n in (set_here.items() if isinstance(set_here, dict) else ())
+                  if u in sites and n is not None and not length_error(n, is_video(u))}
         screens.append(Screen(
             index=i,
             output=s.get("output", f"HDMI-A-{i + 1}"),
@@ -155,6 +163,7 @@ def load_config():
             sites=sites or base,
             base=base,
             seconds=seconds,
+            custom=custom,
             control_port=int(cfg.get("control_port", 8080)),
             video_audio=bool(cfg.get("video_audio", False)),
         ))
@@ -191,6 +200,17 @@ def same_site(url, site):
 
 def is_video(site):
     return site.startswith("video:")
+
+
+def length_error(seconds, video=False):
+    """What is wrong with a time on screen from the phone (seconds; 0 = a video to its end;
+    None = back to config.toml's), or None."""
+    if seconds is None or (video and seconds == 0 and not isinstance(seconds, bool)):
+        return None
+    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not LENGTHS[0] <= seconds <= LENGTHS[1]):  # (False for NaN and infinity too)
+        return f"seconds must be from {LENGTHS[0]} to {LENGTHS[1]}" + (" (0: to its end)" if video else "")
+    return None
 
 
 def video_path(site):
@@ -359,11 +379,12 @@ def end_process(p):
 
 class Screen:
     def __init__(self, index, output, interval, zoom, sites, control_port, video_audio=False,
-                 base=None, seconds=None):
+                 base=None, seconds=None, custom=None):
         self.index, self.output, self.interval, self.zoom = index, output, interval, zoom
         self.sites, self.control_port, self.video_audio = sites, control_port, video_audio
         self.base = base or list(sites)  # the sites in config.toml
-        self.seconds = seconds or {}  # url -> its own time on screen, instead of interval
+        self.seconds = seconds or {}  # url -> its own time on screen (config.toml), instead of interval
+        self.custom = custom or {}  # url -> its time on screen set from the phone (0: a video to its end)
         self.port = 9222 + index
         self.profile = HOME / ".cache" / "kiosk" / f"screen{index}"
         self.proc = None
@@ -371,6 +392,9 @@ class Screen:
         self.leaving = []  # (mpv, when to stop it): videos kept up under the next one (HANDOVER)
         self.tabs = []
         self.temp = None  # (tab id, url) put up with "Show now"; closed on the next switch
+        # when a Show now with a length goes back to the rotation (monotonic; inf: on Resume),
+        # and that time on the wall clock, for the phone (fixed, so the state doesn't change each second)
+        self.temp_until, self.temp_ends_at = float("inf"), None
         # tabs a page opened on top of ours (a target=_blank link, window.open), newest last;
         # closed by the phone's Close tab, the next switch, Show now or Resume (see follow_tabs)
         self.popups = []
@@ -379,6 +403,8 @@ class Screen:
         self.current = 0
         self.paused = False
         self.next_switch = 0.0
+        self.since = 0.0  # when the site on screen came up (or the rotation resumed on it)
+        self.looping = False  # the video on screen repeats on its own (it has a length set)
         self.errors = 0
         self.lock = threading.Lock()
         self.shot, self.shot_time, self.shot_lock = b"", 0.0, threading.Lock()
@@ -481,40 +507,50 @@ class Screen:
         return True
 
     def play(self, site):
-        """Start a video on top. One already up stays under it for HANDOVER s, until the new
-        window is surely up. Sets next_switch: the video's end (with MPV_START to spare, so its
-        end isn't cut; mpv stays on its last frame meanwhile) when ffprobe knows its length,
-        else never (loop() moves on when mpv exits)."""
+        """Start the video on screen (site, the current one) on top. One already up stays under
+        it for HANDOVER s, until the new window is surely up. Sets next_switch, with MPV_START to
+        spare so the end isn't cut (mpv stays on its last frame meanwhile):
+        - a length set on purpose (slot()): then, and mpv repeats the video until then
+          (--loop-file), or it is cut there;
+        - else the video's end, when ffprobe knows its length;
+        - else never (tick() moves on when mpv exits)."""
         path = video_path(site)
         hevc = video_codec(path) == "hevc"
         seconds = video_seconds(path)
-        args = ["mpv", f"--wayland-app-id=kiosk-video-{self.index}", *MPV_FLAGS,
-                f"--keep-open={'yes' if seconds else 'no'}", *(MPV_HEVC if hevc else MPV_OTHER)]
+        length = self.slot(self.current)
+        end = "--loop-file=inf" if length else f"--keep-open={'yes' if seconds else 'no'}"
+        args = ["mpv", f"--wayland-app-id=kiosk-video-{self.index}", *MPV_FLAGS, end,
+                *(MPV_HEVC if hevc else MPV_OTHER)]
         if not self.video_audio:
             args.append("--no-audio")
         with open(HERE / f"mpv{self.index}.log", "w") as mpv_log:  # (mpv keeps its own copy)
             player = subprocess.Popen([*args, str(path)], stdout=mpv_log, stderr=mpv_log)
         if self.player is not None:
             self.leaving.append((self.player, time.monotonic() + HANDOVER))
-        self.player = player
-        self.next_switch = time.monotonic() + MPV_START + seconds if seconds else float("inf")
+        self.player, self.looping = player, bool(length)
+        upto = length or seconds
+        self.next_switch = time.monotonic() + MPV_START + upto if upto else float("inf")
         log(f"screen {self.index}: playing {path.name} ({'HEVC, hardware' if hevc else 'CPU'} decode"
-            + (f", {seconds:.0f} s)" if seconds else ", length unknown)"))
+            + (f", {seconds:.0f} s" if seconds else ", length unknown")
+            + (f"; {length:g} s on screen, set" if length else "") + ")")
 
     def close_temp(self):
+        self.temp_until, self.temp_ends_at = float("inf"), None
         if self.temp is None:
             return
         tab, self.temp = self.temp[0], None
         self.close_tab(tab)
 
     def save_sites(self):
-        """Record how the phone page changed this screen's sites (sites.json)."""
+        """Record how the phone page changed this screen's sites, and the lengths it set (sites.json)."""
         with sites_lock:
             changes = load_site_changes()
             changes[str(self.index)] = {
                 "added": [u for u in self.sites if u not in self.base],
                 "removed": [u for u in self.base if u not in self.sites],
             }
+            if custom := {u: n for u, n in self.custom.items() if u in self.sites}:
+                changes[str(self.index)]["seconds"] = custom
             SITES_FILE.write_text(json.dumps(changes, indent=2) + "\n")
 
     def stop_video(self):
@@ -590,6 +626,7 @@ class Screen:
         self.close_temp()
         self.close_popups()
         self.current = i
+        self.since = time.monotonic()
         if is_video(self.sites[i]):
             self.next_switch = float("inf")  # play() sets the video's end when it knows it
             self.play(self.sites[i])  # over the video before, if any (see play)
@@ -604,11 +641,21 @@ class Screen:
             self.tabs[i] = self.new_tab(self.sites[i])
             self.devtools(f"/json/activate/{self.tabs[i]}")
         self.stop_video()  # only now: the page is already in front behind the video
-        self.next_switch = time.monotonic() + self.slot(i)
+        self.next_switch = self.since + self.slot(i)
 
     def slot(self, i):
-        """Seconds site i stays up: its own `seconds`, else the screen's interval."""
-        return self.seconds.get(self.sites[i], self.interval)
+        """Seconds site i stays up: as set from the phone, else as config.toml says
+        (default_length). None: a video plays to its end."""
+        n = self.custom.get(self.sites[i])
+        return self.default_length(self.sites[i]) if n is None else (n or None)
+
+    def default_length(self, url):
+        """Seconds a site stays up without a length from the phone: its own `seconds` in
+        config.toml, else the screen's interval for a page, or None for a video (to its end)."""
+        n = self.seconds.get(url)
+        if n is not None and n > 0:
+            return n
+        return None if is_video(url) else self.interval
 
     def loop(self):
         while True:
@@ -630,10 +677,15 @@ class Screen:
             time.sleep(0.5)
 
     def tick(self):
-        """One turn of loop(): move on when the time is up or mpv exited, stop videos whose
-        handover is over, and keep up with Chromium's tabs. Caller holds self.lock."""
+        """One turn of loop(): move on when the time is up or mpv exited, go back to the
+        rotation when a Show now's time is up, stop videos whose handover is over, and keep up
+        with Chromium's tabs. Caller holds self.lock."""
         self.retire()
-        if self.player is not None and self.player.poll() is not None:  # no known length, or it failed
+        if self.temp is not None and time.monotonic() >= self.temp_until:
+            log(f"screen {self.index}: Show now's time is up, back to the rotation")
+            self.paused = False
+            self.show(self.current)  # as Resume does
+        elif self.player is not None and self.player.poll() is not None:  # no known length, or it failed
             self.player = None
             if self.paused:  # keep the paused video looping
                 self.play(self.sites[self.current])
@@ -642,24 +694,29 @@ class Screen:
         elif self.tabs and time.monotonic() >= self.next_switch:
             if not self.paused:
                 self.show(self.current + 1)
-            elif self.player is not None:  # a paused video starts again, over its last frame
+            elif self.player is not None and not self.looping:  # a paused video starts again, over its last frame
                 self.play(self.sites[self.current])
         self.follow_tabs()
 
-    def command(self, action, site=None, url=None):
+    def command(self, action, site=None, url=None, seconds=None):
         """Run a phone command. Returns an error message, or None."""
         with self.lock:
             if not self.tabs:
                 return "screen is still starting"
             if action in ("show", "add", "remove") and not url:
                 return "missing link"
-            if action == "show":  # put a link up now, paused, without keeping it
+            if action == "show":  # put a link up now, paused, without keeping it; for `seconds`, if given
+                if error := length_error(seconds):
+                    return error
                 self.close_temp()
                 self.close_popups()
                 tab = self.new_tab(url)
                 self.devtools(f"/json/activate/{tab}")
                 self.temp = (tab, url)
                 self.paused = True
+                if seconds:  # then back to the rotation (tick), as Resume does
+                    self.temp_until = time.monotonic() + seconds
+                    self.temp_ends_at = round(time.time() + seconds)
                 self.stop_video()  # after: the new tab is in front behind the video
             elif action == "add":
                 if url not in self.sites:
@@ -675,6 +732,7 @@ class Screen:
                 i = self.sites.index(url)
                 self.sites.pop(i)
                 tab = self.tabs.pop(i)
+                self.custom.pop(url, None)  # as config.toml says if it's added again
                 self.save_sites()
                 if tab is not None:
                     self.close_tab(tab)
@@ -682,6 +740,23 @@ class Screen:
                     self.current -= 1
                 elif i == self.current:
                     self.show(self.current)
+            elif action == "length":  # site's time on screen: seconds, 0 (a video: to its end) or None (as config.toml says)
+                if site is None or site >= len(self.sites):
+                    return "no such site"
+                u = self.sites[site]
+                if error := length_error(seconds, is_video(u)):
+                    return error
+                before = self.slot(site)
+                if seconds is None:
+                    self.custom.pop(u, None)
+                else:
+                    self.custom[u] = seconds
+                self.save_sites()
+                if site == self.current and self.temp is None and self.slot(site) != before:  # on screen: at once
+                    if self.player is not None:  # the video starts again, with its new length
+                        self.play(u)
+                    elif not is_video(u):  # counted from when the page came up
+                        self.next_switch = self.since + self.slot(site)
             elif action == "next":
                 self.show(self.current + 1)
             elif action == "prev":
@@ -690,7 +765,8 @@ class Screen:
                 self.show(site)
             elif action == "pause":
                 self.paused = True
-            elif action == "resume":
+                self.temp_until, self.temp_ends_at = float("inf"), None  # a Show now stays too
+            elif action == "resume":  # what is on screen gets its full time again (a video not set: to its end)
                 self.paused = False
                 if self.temp is not None:
                     self.show(self.current)
@@ -699,7 +775,11 @@ class Screen:
                     popups = self.close_popups()
                     if not is_video(self.sites[self.current]) and (self.reset_tab(self.current) or popups):
                         self.devtools(f"/json/activate/{self.tabs[self.current]}")
-                    self.next_switch = time.monotonic() + self.slot(self.current)
+                    self.since = time.monotonic()
+                    self.next_switch = self.since + (self.slot(self.current) or self.interval)
+                elif self.looping:  # a video with a length set: that long again from now
+                    self.since = time.monotonic()
+                    self.next_switch = self.since + self.slot(self.current)
             elif action == "closetab":  # the tab on screen, one at a time; never a rotation site's
                 self.follow_tabs()  # a tap may have opened a tab since the loop last looked
                 if self.popups:  # back to the tab underneath: the one that opened it, Show now's or the site's
@@ -725,6 +805,7 @@ class Screen:
                 return "a video is playing"
             self.cdp(lambda page: page_action(page, action, data))
             self.paused = True
+            self.temp_until, self.temp_ends_at = float("inf"), None  # in use: a Show now stays too
 
     def capture(self):
         """A small JPEG of what this screen shows: the tab on screen over DevTools when no
@@ -764,6 +845,7 @@ class Screen:
     def state(self):
         tab, url = self.on_screen
         on_top = tab is not None and tab == self.active_tab() and self.player is None
+        sites, custom = list(self.sites), dict(self.custom)
         return {
             "index": self.index,
             "output": self.output,
@@ -775,9 +857,14 @@ class Screen:
             "page": label(url) if url and on_top else None,
             # whether Close tab (closetab) has a tab to close: one a link or Show now opened
             "closable": bool(self.popups or self.temp) and self.player is None,
+            # when a Show now with a length goes back to the rotation (Unix time), else None
+            "temp_ends_at": self.temp_ends_at if self.temp else None,
             "interval": self.interval,
-            "sites": [label(u) for u in self.sites],
-            "urls": self.sites,
+            "sites": [label(u) for u in sites],
+            "urls": sites,
+            # each site's time on screen: "auto" as config.toml says (None: a video to its end),
+            # "set" from the phone (0: a video to its end), else None
+            "lengths": [{"auto": self.default_length(u), "set": custom.get(u)} for u in sites],
         }
 
 
@@ -841,9 +928,15 @@ def run_command(screens, i, action, query, data, via=None):
         url = clean_url(url)
         if url is None:
             return 400, {"error": "that isn't a web address"}
-    log(f"control: {action} {url or site or ''} on screen {i}" + (f" (via {via})" if via else ""))
+    # show: {"url", "seconds"} (then back to the rotation); length (?site=<n>): {"seconds"}
+    seconds = data.get("seconds") if isinstance(data, dict) and action in ("show", "length") else None
+    if error := length_error(seconds, video=action == "length"):  # (0 only for a video: checked there)
+        return 400, {"error": error}
+    how = (f" for {seconds:g} s" if seconds else " to its end" if seconds == 0
+           else " as config.toml says" if action == "length" else "")
+    log(f"control: {action} {url or site or ''}{how} on screen {i}" + (f" (via {via})" if via else ""))
     try:
-        error = screens[i].command(action, int(site) if site and site.isdigit() else None, url)
+        error = screens[i].command(action, int(site) if site and site.isdigit() else None, url, seconds)
     except OSError as e:
         error = f"browser didn't respond ({e})"
     if error:
@@ -1167,6 +1260,8 @@ def main():
                   f"every {s.interval:g} s, zoom {s.zoom:g}")
             for url, sec in s.seconds.items():
                 print(f"  {label(url)}: {sec:g} s")
+            for url, sec in s.custom.items():
+                print(f"  {label(url)}: {f'{sec:g} s' if sec else 'to its end'}, set from the phone page (sites.json)")
             if s.sites != s.base:
                 print(f"  changed from the phone page (sites.json): {len(s.sites)} sites now")
             for site in filter(is_video, s.sites):

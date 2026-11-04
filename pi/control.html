@@ -21,9 +21,12 @@
     justify-content: center; gap: 8px; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
     transition: transform .08s, background-color .08s; }
   button:active { background: var(--press); transform: scale(.97); }
-  button.busy { cursor: progress; opacity: .75; box-shadow: inset 0 -4px 0 var(--focus); animation: busy .8s ease-in-out infinite alternate; }
+  button.busy, select.busy { cursor: progress; opacity: .75; box-shadow: inset 0 -4px 0 var(--focus); animation: busy .8s ease-in-out infinite alternate; }
   @keyframes busy { to { box-shadow: inset 0 -4px 0 transparent; } }
-  button:focus-visible, input:focus-visible, .frame:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  button:focus-visible, input:focus-visible, select:focus-visible, .frame:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  /* 16px: an iPhone zooms into a smaller field when it is tapped */
+  select { font: inherit; font-size: 16px; min-height: 48px; padding: 0 8px; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--btn); color: var(--text); cursor: pointer; }
   input { font: inherit; font-size: 16px; width: 100%; min-height: 48px; padding: 0 14px; border-radius: 12px;
     border: 1px solid #7d70bb; background: var(--field); color: var(--text); }
   input::placeholder { color: #9d94c2; }
@@ -123,12 +126,19 @@
   .typing button { font-size: 15px; }
   .link { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 12px 0; }
   .link input { grid-column: 1 / -1; }
+  .for { grid-column: 1 / -1; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px;
+    color: var(--dim); font-size: 15px; }
   .sites { list-style: none; display: grid; gap: 6px; margin: 12px 12px 0; padding: 0; }
-  .site { display: grid; grid-template-columns: 1fr 48px; gap: 6px; }
+  /* a site, its time on screen (a Pi before it had lengths: none) and its remove button */
+  .site { display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-flow: column; grid-auto-columns: auto; gap: 6px; }
+  .len { width: 108px; }
+  .len.set { border-color: var(--brand); color: #e0d2ff; font-weight: 700; }  /* set here, not as configured */
+  .rm { width: 48px; }
   .jump { justify-content: space-between; padding: 10px 14px; text-align: left; overflow-wrap: anywhere; font-weight: 500; }
   .site.on .jump { background: rgb(155 107 255 / .2); border-color: var(--brand); font-weight: 700; }
   .tag { flex: none; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; background: var(--brand-strong); color: #fff; }
   .rm { padding: 0; color: var(--dim); }
+  .lens { margin: 10px 12px 0; }
   .gone .off { margin: 0 16px; font-size: 18px; font-weight: 600; }
   .gone .hint { margin: 6px 16px 0; }
 
@@ -403,12 +413,28 @@
     c.link = Object.assign(el("input"), { type: "url", placeholder: "Paste a link, e.g. court.kleros.io" });
     c.link.setAttribute("aria-label", `Link for ${host}`);
     const showNow = button("Show now"), keep = button("Add to rotation");
-    showNow.onclick = () => c.link.value.trim() && act(showNow, c, "show", { body: { url: c.link.value } })
-      .then((ok) => { if (ok) c.link.value = ""; });
+    // how long Show now stays before the rotation goes on (a Pi before lengths: until Resume, no choice)
+    c.forRow = el("div", "", "for");
+    c.showFor = el("select");
+    c.showFor.setAttribute("aria-label", `How long Show now stays on ${host}`);
+    for (const [v, t] of [["", "until you resume"], ["60", "1 min"], ["300", "5 min"], ["900", "15 min"],
+      ["1800", "30 min"], ["3600", "1 hour"]]) c.showFor.append(option(v, t));
+    const kept = load("kioskShowFor");  // this phone's last choice
+    c.showFor.value = [...c.showFor.children].some((o) => o.value === kept) ? kept : "";
+    c.showFor.onchange = () => save(c.showFor.value, "kioskShowFor");
+    c.forRow.append(el("span", "Show now stays"), c.showFor);
+    c.forRow.hidden = true;
+    showNow.onclick = () => {
+      const seconds = !c.forRow.hidden && +c.showFor.value;
+      return c.link.value.trim() && act(showNow, c, "show", { body: seconds ? { url: c.link.value, seconds } : { url: c.link.value } })
+        .then((ok) => { if (ok) c.link.value = ""; });
+    };
     keep.onclick = () => c.link.value.trim() && act(keep, c, "add", { body: { url: c.link.value } })
       .then((ok) => { if (ok) c.link.value = ""; });
-    link.append(c.link, showNow, keep);
+    link.append(c.link, showNow, keep, c.forRow);
 
+    c.lensHint = el("p", "Time on screen: a purple one was set from a phone; the first choice goes back to the usual time.", "hint lens");
+    c.lensHint.hidden = true;
     c.sites = el("ul", "", "sites");
 
     // shown only in full screen, next to the picture
@@ -429,8 +455,40 @@
     const hint = el("p", "", "hint");  // which TV this is, as the card's heading is hidden
     hint.append(el("strong", host), el("span", ": tap the picture to click, swipe it to scroll."));
     dock.append(hint, el("p", "Turn the phone sideways for a bigger picture.", "hint turn"), keys);
-    c.root.append(head, c.frame, c.bar, primary, browse, link, c.sites, dock);
+    c.root.append(head, c.frame, c.bar, primary, browse, link, c.lensHint, c.sites, dock);
     return c;
+  }
+
+  function option(value, text) {
+    const o = el("option", text);
+    o.value = value;
+    return o;
+  }
+  // a time on screen: null or 0 is a video to its end
+  function length(n) {
+    if (!n) return "To the end";
+    n = Math.round(n);
+    if (n < 60) return `${n} s`;
+    return n % 60 ? `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}` : `${n / 60} min`;
+  }
+  const LENGTHS = [15, 30, 45, 60, 90, 120, 180, 300, 600];
+  // site i's time on screen: the usual one (config.toml's: auto), or one set from a phone (set)
+  function lengthPicker(c, name, i, video, { auto, set: own }) {
+    const was = own == null ? "" : String(own);
+    const sel = el("select", "", own == null ? "len" : "len set");
+    sel.setAttribute("aria-label", `Time on screen for ${name}`);
+    const usual = el("optgroup"), here = el("optgroup");
+    usual.setAttribute("label", "Usual");
+    here.setAttribute("label", "Set from a phone");
+    usual.append(option("", length(auto)));
+    const values = [...(video && auto ? [0] : []), ...LENGTHS];
+    if (own != null && !values.includes(own)) values.push(own);
+    for (const v of values) if (v !== (auto || 0) || v === own) here.append(option(String(v), length(v)));
+    sel.append(usual, here);
+    sel.value = was;
+    sel.onchange = () => act(sel, c, "length", { site: i, body: { seconds: sel.value === "" ? null : +sel.value } })
+      .then((ok) => { if (!ok) sel.value = was; });
+    return sel;
   }
 
   // full screen: one TV's picture fills the phone (the browser's own full screen too, where it has
@@ -482,29 +540,46 @@
     for (const b of c.closers) b.hidden = !s.closable;  // (a Pi before Close tab: never)
     // Pause holds the rotation on what is showing; a video on screen keeps repeating
     const video = !s.temp && (site || "").startsWith("▶");
-    set(c.bar, s.temp ? "Not saved. Tap to go back to the rotation."
+    // a Show now with a length goes back by itself (temp_ends_at: Unix time, from the Pi's clock)
+    const left = s.temp && s.temp_ends_at ? s.temp_ends_at - Date.now() / 1000 : null;
+    set(c.bar, s.temp ? (left == null ? "Not saved. Tap to go back to the rotation."
+      : `Not saved. Back to the rotation ${left < 60 ? "in under a minute" : `in about ${Math.ceil(left / 60)} min`}. Tap to go back now.`)
       : video ? "Rotation paused: the video keeps repeating. Tap to resume." : "Rotation paused. Tap to resume.");
     if (c.pause.dataset.paused !== String(s.paused)) {
       c.pause.dataset.paused = String(s.paused);
       c.pause.replaceChildren(icon(s.paused ? "play" : "pause"), el("span", s.paused ? "Resume rotation" : "Pause rotation"));
     }
-    const sig = JSON.stringify([s.sites, s.urls, s.current, s.temp]);
-    if (c.sig === sig) return;
-    c.sig = sig;
-    c.sites.replaceChildren(...s.sites.map((name, i) => {
-      const on = i === s.current && !s.temp;
-      const li = el("li", "", on ? "site on" : "site");
-      const jump = el("button", "", "jump");
-      jump.type = "button";
-      jump.append(el("span", name));
-      if (on) { jump.append(el("span", "On now", "tag")); jump.setAttribute("aria-current", "true"); }
-      jump.onclick = () => act(jump, c, "jump", { site: i });
-      const remove = button("", "x", "rm");
-      remove.setAttribute("aria-label", `Remove ${name}`);
-      remove.onclick = () => confirm(`Remove ${name} from ${host}'s rotation?`) && act(remove, c, "remove", { body: { url: s.urls[i] } });
-      li.append(jump, remove);
-      return li;
-    }));
+    // times on screen (a Pi before it had them sends no lengths: no pickers, Show now until Resume)
+    const lengths = Array.isArray(s.lengths) && s.lengths.length === s.sites.length ? s.lengths : null;
+    c.forRow.hidden = c.lensHint.hidden = !lengths;
+    // the rows are rebuilt only when the list changes, not on each switch: an open picker stays open
+    const sig = JSON.stringify([s.sites, s.urls, lengths]);
+    if (c.sig !== sig) {
+      c.sig = sig;
+      c.on = null;
+      c.rows = s.sites.map((name, i) => {
+        const li = el("li", "", "site"), jump = el("button", "", "jump"), tag = el("span", "On now", "tag");
+        jump.type = "button";
+        jump.append(el("span", name));
+        jump.onclick = () => act(jump, c, "jump", { site: i });
+        li.append(jump);
+        if (lengths) li.append(lengthPicker(c, name, i, (s.urls[i] || "").startsWith("video:"), lengths[i] || {}));
+        const remove = button("", "x", "rm");
+        remove.setAttribute("aria-label", `Remove ${name}`);
+        remove.onclick = () => confirm(`Remove ${name} from ${host}'s rotation?`) && act(remove, c, "remove", { body: { url: s.urls[i] } });
+        li.append(remove);
+        return { li, jump, tag };
+      });
+      c.sites.replaceChildren(...c.rows.map((r) => r.li));
+    }
+    const on = s.temp ? -1 : s.current;
+    if (c.on === on) return;
+    c.on = on;
+    c.rows.forEach((r, i) => {
+      r.li.className = i === on ? "site on" : "site";
+      if (i === on) { r.jump.append(r.tag); r.jump.setAttribute("aria-current", "true"); }
+      else { r.tag.remove(); r.jump.removeAttribute("aria-current"); }
+    });
   }
 
   function offCard(name, waiting) {

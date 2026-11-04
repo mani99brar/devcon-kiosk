@@ -20,7 +20,7 @@ Devcon booth. **The event starts 4 Nov 2026.** README.md is the runbook; `docs/s
 
 | Path | What |
 |---|---|
-| `config.toml` | Sites/videos per Pi; `{ url = ..., seconds = ... }` entries can set their own time |
+| `config.toml` | Sites/videos per Pi; `{ url = ..., seconds = ... }` entries (videos too) can set their own time; the phone's lengths in the Pi's `sites.json` win over it |
 | `secret.toml` (git-ignored) | access_code, public_urls, server_url, server_lab_token, server_pi_key, server_team_link |
 | `pi/kiosk.py` | Runs on the Pi: Chromium tabs via DevTools, mpv for videos, phone API on :8080, uplink to the relay |
 | `pi/control.html` | The phone page (served by each Pi and by the relay) |
@@ -65,6 +65,10 @@ Devcon booth. **The event starts 4 Nov 2026.** README.md is the runbook; `docs/s
   showed between two videos (and in previews). Now mpv runs `--keep-open=yes` when ffprobe knows the length, the
   next video starts over the last frame, and the old one stops `HANDOVER` s later; a page is put in front before a
   video stops. Don't go back to stopping the video first.
+- Lengths (3 Nov, DM 3336): a video with a length set (config `seconds` or the phone's `length` command) runs with
+  `--loop-file=inf` and is switched at that length, so it never exits by itself; with no length it still uses
+  `--keep-open` and plays to its end. A paused looping video is not restarted. The state's `temp_ends_at` is a fixed
+  Unix time, not a countdown: the uplink sends the state whenever it changes, so a countdown would send it every 0.25 s.
 - `deploy.sh` mirrors `videos/` and `pages/` with `--delete` and refuses to run if a file `config.toml` uses is
   missing locally, so a clone without media can't wipe the Pis. Pages are `file:///home/kiosk/kiosk/pages/<file>`.
 

@@ -194,6 +194,14 @@ The page is used one-handed on a phone at a busy booth, by ~10 teammates. Goals:
   The page drops a `shot.jpg` answer once the WebSocket took over or a newer request went out, and clears the
   picture while it is hidden. (The flash on the TVs themselves, between two videos, is fixed in kiosk.py's
   video handover: see CLAUDE.md's gotchas.)
+- **Time on screen** (DM 3336). New command `length?site=<n>` with body `{"seconds": n}` (5 to 3600; 0 = a
+  video to its end; `null` or no body = back to `config.toml`'s), kept per URL in `sites.json` (`"seconds"`,
+  written only when there is one, and dropped when the site is removed). `show` takes `"seconds"` too: the
+  rotation goes on by itself then, unless Pause or browsing holds it. Out-of-range or non-number seconds: 400;
+  0 for a page or a bad `site`: 409. Each screen's state has `lengths` (per site, `{"auto", "set"}`: `auto` from
+  `config.toml`, `null` = a video to its end; `set` from a phone) and `temp_ends_at` (Unix time, or null). The
+  page shows the pickers only when a Pi sends `lengths`, so an older Pi gets no length it would ignore. The relay
+  needs no change (`length` matches its `[a-z]{1,20}` action pattern), but it serves its own copy of the page.
 
 ## Tests
 

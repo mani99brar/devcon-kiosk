@@ -3,6 +3,8 @@
 # One [[pi.<hostname>.screen]] block per TV; add a site with one line in `sites`.
 # Videos: put the file in videos/ and add "video:<file>"; it plays once, then the rotation moves on.
 #   4K only as HEVC (hardware decode); H.264 up to 1080p.
+# Time on screen: { url = "...", seconds = 90 } gives any entry its own (a video then repeats or is cut to fit);
+#   the phone page can change each one too (kept in sites.json on the Pi, over this file).
 
 # The access code and the team links are in secret.toml (not in git; copy secret.example.toml to start).
 control_port = 8080      # phone control on the same Wi-Fi: http://<host>.local:8080
@@ -12,7 +14,7 @@ video_audio = false      # true sends video sound to the TV over HDMI
 
 [[pi.kleros1.screen]]
 output = "HDMI-A-1"      # HDMI0, the port next to the USB-C power port
-interval = 60            # seconds per web page (an entry can set its own: { url = ..., seconds = ... }); videos play to the end
+interval = 60            # seconds per web page; videos play to the end (unless an entry sets its own `seconds`)
 sites = [
   "video:Kleros_Devcon8_Booth_Screen1_Enterprise-AgentCourt-Escrow_v27_1080p_master.mp4",
   "video:kleros-agentic-court-loop-1080p.mp4",
@@ -22,7 +24,7 @@ sites = [
 
 [[pi.kleros2.screen]]
 output = "HDMI-A-1"
-interval = 60            # seconds per web page (an entry can set its own: { url = ..., seconds = ... }); videos play to the end
+interval = 60            # seconds per web page; videos play to the end (unless an entry sets its own `seconds`)
 sites = [
   "video:Kleros_Devcon8_Booth_Screen2_Curate-Scout-Oracle_v27_1080p_master.mp4",
   "https://devcon-foresight.netlify.app/",

@@ -86,7 +86,11 @@ Each Pi has a `[[pi.<hostname>.screen]]` block with its `output` and its `sites`
 | `"https://devcon-foresight.netlify.app/"` | A web page, for the screen's `interval` (60 s on both TVs now). |
 | `{ url = "https://...", seconds = 241 }` | A web page with its own time on screen. |
 | `"video:<file>"` | `videos/<file>`, played once to the end; then the rotation moves on. |
+| `{ url = "video:<file>", seconds = 90 }` | A video for exactly 90 s: it repeats if it is shorter, and is cut if it is longer. |
 | `"file:///home/kiosk/kiosk/pages/<file>.html"` | A local HTML page from `pages/`, shown like a web page (no internet needed). |
+
+Each item's time can also be changed from the phone page (section 3); that wins over `config.toml` until it is
+set back to **Usual** there.
 
 To change what's shown, edit `config.toml` and rerun `./deploy.sh <host>` for that Pi.
 `deploy.sh` mirrors `videos/` and `pages/` to the Pi (a file removed here is removed there). They aren't in git,
@@ -138,14 +142,16 @@ slower polling fallback, which still works.
 | Back / Forward / Reload, Scroll up / down | On the page on the TV. |
 | Text box, Type, Enter | Tap a field in the preview first, then Type puts the text in it; Enter presses Enter. |
 | Close tab | Shown only while the TV is on a tab that a link (or Show now) opened: closes it and goes back to the tab underneath. The rotation's own tabs never close (use Back). |
-| Show now | Puts the link on the TV at once, paused, without saving it (orange bar; tap it to go back to the rotation). |
+| Show now | Puts the link on the TV at once, paused, without saving it (orange bar; tap it to go back to the rotation). **Show now stays** below it picks how long: until you resume (the default), or 1, 5, 15, 30 min or 1 hour, after which the rotation goes on by itself. Browsing or Pause on the phone keeps it up until Resume. |
 | Add to rotation | Adds the link to that TV's rotation and shows it. |
-| Site list | Tap a site to jump to it; **✕** removes it from the rotation (asks first). |
+| Site list | Tap a site to jump to it; **✕** removes it from the rotation (asks first). The box next to each one is its **time on screen**: **Usual** is the time from `config.toml` (pages: `interval` or their `seconds`; videos: to the end), or pick 15 s to 10 min (a purple box was set from a phone). A change to the item on screen counts at once: a page from when it came up; a video starts again with its new time. |
 
 - Clicking, scrolling, typing and Back / Forward / Reload pause the rotation, so it doesn't switch away while someone browses. Resume
   (or the next switch) puts a tab that was browsed off its site back on it. They don't work while a video plays.
-- Added and removed sites are saved in `~/kiosk/sites.json` on that Pi, on top of `config.toml`, and survive
-  reboots and deploys. To undo all of them: `ssh ... rm ~/kiosk/sites.json`, then redeploy.
+- Added and removed sites, and times set from the phone, are saved in `~/kiosk/sites.json` on that Pi, on top
+  of `config.toml`, and survive reboots and deploys. To undo all of them: `ssh ... rm ~/kiosk/sites.json`, then redeploy.
+- Pause and Resume: nothing switches while paused; on Resume the item on screen gets its full time again (a
+  video with no time set plays on to its end).
 - Every command is logged in `~/kiosk/kiosk.log` on the Pi, and in the relay's log.
 
 Pages that need a wallet or a login (for example Kleros Court's home page) show empty boxes. Use pages that show content without one.
@@ -261,7 +267,8 @@ Laptop tests, run by Claude on 2 Nov (23:34, again at 23:47): 117 Python tests (
 
 **Adding a video:** put the file in `videos/` on the Mac, add `"video:<file>"` to a screen's `sites` in
 `config.toml`, and run `deploy.sh`. It mirrors `videos/` to the Pi (removing a file here removes it there),
-and the video plays once in its turn before the rotation moves on. Next, Prev and jump work on videos.
+and the video plays once in its turn before the rotation moves on (or, with `seconds` set in `config.toml` or a
+time set on the phone, repeats or is cut to fit that time). Next, Prev and jump work on videos.
 Pause keeps the current video looping. Sound is off unless `video_audio = true`.
 The kiosk picks the decoder from the file: HEVC uses `--hwdec=drm --vo=dmabuf-wayland` (hardware),
 and anything else is decoded on the CPU (`--vo=gpu-next`), which is fine for H.264 up to 1080p.

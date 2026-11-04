@@ -672,8 +672,9 @@ class FakeMpv:
         return self.returncode
 
     def end_of_video(self):
-        """Its last frame: mpv exits there, unless --keep-open=yes keeps that frame up."""
-        if "--keep-open=yes" not in self.args:
+        """Its last frame: mpv exits there, unless --keep-open=yes keeps that frame up or
+        --loop-file=inf starts the video again."""
+        if "--keep-open=yes" not in self.args and "--loop-file=inf" not in self.args:
             self.exit(0)
 
     def exit(self, code):
@@ -690,10 +691,8 @@ class FakeMpv:
         return self.returncode
 
 
-class VideoHandover(PiTest):
-    """3 Nov (DM 3327): "flashes in the rotation and it flashes a wrong preview". mpv closed at
-    a video's end and the next one took a moment to come up, so between two videos the TV (and
-    a preview taken then, with grim) showed the browser's page behind them."""
+class TvTest(PiTest):
+    """A Screen with the real play(): mpv (FakeMpv) on a FakeTv, over the fake Chromium."""
     SITES = ["https://example.org", "video:a.mp4", "video:b.mp4", "https://example.net/page"]
     seconds = 30.0  # what ffprobe says
 
@@ -740,6 +739,12 @@ class VideoHandover(PiTest):
     def time_is_up(self):
         self.screen.next_switch = min(self.screen.next_switch, time.monotonic())
         self.tick()
+
+
+class VideoHandover(TvTest):
+    """3 Nov (DM 3327): "flashes in the rotation and it flashes a wrong preview". mpv closed at
+    a video's end and the next one took a moment to come up, so between two videos the TV (and
+    a preview taken then, with grim) showed the browser's page behind them."""
 
     def test_no_page_between_two_videos(self):
         s = self.screen
@@ -809,6 +814,184 @@ class VideoHandover(PiTest):
         s.kill()
         self.assertEqual(([m.returncode for m in self.tv.mpvs[2:]], s.leaving), ([-15, -15], []))
 
+
+class RotationLength(TvTest):
+    """3 Nov (DM 3336): "add custom rotation length based on what's showing up". An entry's time
+    on screen: set from the phone (sites.json), else its `seconds` in config.toml (now for a
+    video too), else the interval for a page and to its end for a video. A video with a length
+    repeats (mpv --loop-file) or is cut there, and still hands over to the next (DM 3327)."""
+
+    def length(self, site, seconds):
+        return self.run_command("length", {"seconds": seconds}, f"site={site}")
+
+    def saved(self):
+        return json.loads(kiosk.SITES_FILE.read_text())["0"]
+
+    def test_a_video_with_a_length_is_cut_there_and_still_hands_over(self):
+        s = self.screen
+        self.assertEqual(self.length(1, 10), (200, None))
+        self.start(1)
+        a = self.tv.mpvs[0]
+        self.assertIn("--loop-file=inf", a.args)
+        self.assertNotIn("--keep-open=yes", a.args)
+        self.assertAlmostEqual(s.next_switch, time.monotonic() + 10 + kiosk.MPV_START, delta=0.5)  # not its 30 s
+        self.time_is_up()
+        b = self.tv.mpvs[1]
+        self.assertEqual((self.tv.seen, s.current, a.returncode), (["a.mp4", "b.mp4"], 2, None))  # no page between
+        self.assertIn("--keep-open=yes", b.args)  # no length: to its end, as before
+        self.assertAlmostEqual(s.next_switch, time.monotonic() + 30 + kiosk.MPV_START, delta=0.5)
+        self.assertTrue(self.logged("playing a.mp4 (CPU decode, 30 s; 10 s on screen, set)"))
+
+    def test_a_video_shorter_than_its_length_repeats_until_then(self):
+        s = self.screen
+        self.length(1, 100)
+        self.start(1)
+        self.assertAlmostEqual(s.next_switch, time.monotonic() + 100 + kiosk.MPV_START, delta=0.5)
+        self.video_ends()  # at 30 s: mpv starts it again by itself
+        self.tick()
+        self.assertEqual((s.current, len(self.tv.mpvs), self.tv.mpvs[0].returncode, self.tv.seen),
+                         (1, 1, None, ["a.mp4"]))
+        self.time_is_up()
+        self.assertEqual((s.current, self.tv.seen), (2, ["a.mp4", "b.mp4"]))
+
+    def test_a_length_when_ffprobe_cant_tell(self):
+        self.seconds = None
+        s = self.screen
+        self.length(1, 20)
+        self.start(1)
+        self.assertIn("--loop-file=inf", self.tv.mpvs[0].args)
+        self.assertAlmostEqual(s.next_switch, time.monotonic() + 20 + kiosk.MPV_START, delta=0.5)  # not never
+        self.video_ends()
+        self.tick()
+        self.assertEqual(s.current, 1)
+        self.time_is_up()
+        self.assertEqual(s.current, 2)
+        self.assertIn("--keep-open=no", self.tv.mpvs[1].args)  # b: as before
+        self.assertTrue(self.logged("playing a.mp4 (CPU decode, length unknown; 20 s on screen, set)"))
+
+    def test_the_page_on_screen_gets_its_new_length_from_when_it_came_up(self):
+        s = self.screen
+        self.start(0)
+        since = s.since
+        self.assertEqual(s.next_switch, since + 30)  # the interval
+        self.assertEqual(self.length(0, 10), (200, None))
+        self.assertEqual(s.next_switch, since + 10)
+        self.assertEqual(self.saved(), {"added": [], "removed": [], "seconds": {"https://example.org": 10}})
+        self.assertEqual(s.state()["lengths"], [{"auto": 30, "set": 10}, {"auto": None, "set": None},
+                                                {"auto": None, "set": None}, {"auto": 30, "set": None}])
+        self.assertEqual(self.length(0, None), (200, None))  # back to config.toml's
+        self.assertEqual(s.next_switch, since + 30)
+        self.assertEqual(self.saved(), {"added": [], "removed": []})  # as before lengths
+        self.assertTrue(self.logged("control: length 0 for 10 s on screen 0"))
+        self.assertTrue(self.logged("control: length 0 as config.toml says on screen 0"))
+
+    def test_the_video_on_screen_starts_again_with_its_new_length(self):
+        s = self.screen
+        self.start(1)
+        self.assertEqual(self.length(1, 10), (200, None))
+        a, again = self.tv.mpvs
+        self.assertEqual((again.video, a.returncode, self.tv.seen), ("a.mp4", None, ["a.mp4"]))  # over it: no page
+        self.assertIn("--loop-file=inf", again.args)
+        self.assertAlmostEqual(s.next_switch, time.monotonic() + 10 + kiosk.MPV_START, delta=0.5)
+        self.length(1, 10)  # the same length: left alone
+        self.assertEqual(len(self.tv.mpvs), 2)
+        self.assertEqual(self.length(1, 0), (200, None))  # to its end
+        self.assertIn("--keep-open=yes", self.tv.mpvs[2].args)
+        self.assertAlmostEqual(s.next_switch, time.monotonic() + 30 + kiosk.MPV_START, delta=0.5)
+        self.assertEqual(self.saved()["seconds"], {"video:a.mp4": 0})
+
+    def test_a_paused_video_with_a_length_isnt_restarted_and_resume_gives_it_its_time(self):
+        s = self.screen
+        self.length(1, 10)
+        self.start(1)
+        self.run_command("pause")
+        self.time_is_up()
+        self.video_ends()
+        self.tick()
+        self.assertEqual((s.current, len(self.tv.mpvs)), (1, 1))  # mpv repeats it by itself
+        self.run_command("resume")
+        self.assertAlmostEqual(s.next_switch, time.monotonic() + 10, delta=0.5)
+
+    def test_show_now_with_a_length_goes_back_to_the_rotation(self):
+        s = self.screen
+        self.start(1)  # on a video
+        self.assertEqual(self.run_command("show", {"url": "kleros.io", "seconds": 300}), (200, None))
+        state = s.state()
+        self.assertIsInstance(state["temp_ends_at"], int)
+        self.assertAlmostEqual(state["temp_ends_at"], time.time() + 300, delta=2)
+        self.assertEqual((bool(state["temp"]), state["paused"], s.player), (True, True, None))
+        self.tick()
+        self.assertIsNotNone(s.temp)  # not yet
+        s.temp_until = time.monotonic()
+        self.tick()
+        self.assertEqual((s.temp, s.paused, s.current, s.state()["temp_ends_at"]), (None, False, 1, None))
+        self.assertEqual(self.tv.seen, ["a.mp4", "https://kleros.io", "a.mp4"])  # back on the rotation's video
+        self.assertTrue(self.logged("Show now's time is up, back to the rotation"))
+        self.assertTrue(self.logged("control: show https://kleros.io for 300 s on screen 0"))
+        self.run_command("show", {"url": "kleros.io", "seconds": 300})
+        s.kill()  # Chromium restarts: no Show now left to go back from
+        self.assertEqual((s.temp, s.state()["temp_ends_at"]), (None, None))
+
+    def test_using_a_show_now_keeps_it_up_until_resume(self):
+        s = self.screen
+        for hold in (lambda: self.run_command("pause"), lambda: self.run_command("scroll", {"dy": 0.5})):
+            self.run_command("show", {"url": "kleros.io", "seconds": 60})
+            self.assertLess(s.temp_until, float("inf"))
+            self.assertEqual(hold(), (200, None))
+            self.assertEqual((s.temp_until, s.state()["temp_ends_at"]), (float("inf"), None))
+            self.time_is_up()
+            self.assertIsNotNone(s.temp)
+        self.run_command("show", {"url": "kleros.io"})  # no length: until Resume, as before
+        self.assertEqual((s.temp_until, s.state()["temp_ends_at"]), (float("inf"), None))
+
+    def test_bad_lengths_are_refused_and_nothing_is_saved(self):
+        for seconds in (4, 3601, "60", True, float("nan"), float("inf"), [60], {"s": 60}):
+            self.assertEqual(self.length(0, seconds),
+                             (400, {"error": "seconds must be from 5 to 3600 (0: to its end)"}), seconds)
+            self.assertEqual(self.run_command("show", {"url": "kleros.io", "seconds": seconds}),
+                             (400, {"error": "seconds must be from 5 to 3600"}), seconds)
+        self.assertEqual(self.length(0, 0), (409, {"error": "seconds must be from 5 to 3600"}))  # a page has no end
+        self.assertEqual(self.run_command("show", {"url": "kleros.io", "seconds": 0}),
+                         (400, {"error": "seconds must be from 5 to 3600"}))
+        self.assertEqual(self.length(9, 60), (409, {"error": "no such site"}))
+        self.assertEqual(self.run_command("length", {"seconds": 60}), (409, {"error": "no such site"}))
+        self.assertEqual((kiosk.SITES_FILE.exists(), self.screen.temp, self.screen.custom), (False, None, {}))
+
+    def test_removing_a_site_drops_its_length(self):
+        s = self.screen
+        self.run_command("add", {"url": "kleros.io"})
+        i = s.sites.index("https://kleros.io")
+        self.length(i, 45)
+        self.assertEqual(self.saved()["seconds"], {"https://kleros.io": 45})
+        self.run_command("remove", {"url": "https://kleros.io"})
+        self.assertEqual((s.custom, self.saved()), ({}, {"added": [], "removed": []}))
+        self.run_command("add", {"url": "kleros.io"})
+        self.assertEqual(s.slot(s.sites.index("https://kleros.io")), 30)
+
+
+class LengthConfig(PiTest):
+    def test_lengths_from_config_and_from_the_phone(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        (Path(tmp.name) / "config.toml").write_text(
+            "[[pi.kleros9.screen]]\n"
+            "interval = 60\n"
+            "sites = [\n"
+            '  "https://example.org",\n'
+            '  { url = "video:a.mp4", seconds = 45 },\n'
+            '  { url = "https://example.net/page", seconds = 20 },\n'
+            '  "video:b.mp4",\n'
+            '  { url = "video:c.mp4", seconds = 90 },\n'
+            "]\n")
+        kiosk.SITES_FILE.write_text(json.dumps({"0": {"added": [], "removed": [], "seconds": {
+            "https://example.org": 30, "video:c.mp4": 0, "https://gone.example": 40, "video:b.mp4": "x",
+            "https://example.net/page": 0}}}))
+        with mock.patch.object(kiosk, "HERE", Path(tmp.name)), \
+                mock.patch.object(kiosk.socket, "gethostname", lambda: "kleros9"):
+            _, _, (s,) = kiosk.load_config()
+        self.assertEqual([s.slot(i) for i in range(5)], [30, 45, 20, None, None])  # c: to its end, from the phone
+        self.assertEqual(s.custom, {"https://example.org": 30, "video:c.mp4": 0})  # the rest dropped
+        self.assertEqual([n["auto"] for n in s.state()["lengths"]], [60, 45, 20, None, 90])
 
 
 class VideoSeconds(unittest.TestCase):

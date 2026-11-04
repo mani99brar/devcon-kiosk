@@ -469,6 +469,15 @@ class TwoPisOverWebSocket(EndToEnd):
         self.assertEqual(json.loads(kiosk.SITES_FILE.read_text())["0"], {"added": [url], "removed": []})
         self.assertEqual(self.ok(phone, "kleros1", "remove", body={"url": url})["screens"][0]["urls"], SITES)
 
+        # a time on screen from the phone (3 Nov, DM 3336): through the relay, kept in sites.json
+        state = self.ok(phone, "kleros1", "length", query="site=0", body={"seconds": 45})
+        self.assertEqual(state["screens"][0]["lengths"][:2], [{"auto": 30, "set": 45}, {"auto": None, "set": None}])
+        self.assertEqual(json.loads(kiosk.SITES_FILE.read_text())["0"]["seconds"], {SITES[0]: 45})
+        self.assertEqual(phone.command("kleros1", "length", 0, "site=0", {"seconds": 2}),
+                         (400, {"error": "seconds must be from 5 to 3600 (0: to its end)"}))
+        self.assertEqual(self.ok(phone, "kleros1", "length", query="site=0")["screens"][0]["lengths"][0],
+                         {"auto": 30, "set": None})  # no body: back to config.toml's
+
         t = self.fake["kleros2"].screens[1]
         self.assertTrue(self.ok(phone, "kleros2", "pause", i=1)["screens"][1]["paused"] and t.paused)
         self.assertFalse(self.fake["kleros1"].screens[1].paused)

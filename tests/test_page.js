@@ -587,6 +587,108 @@ const cases = [
     return old.startsWith("blob:") && cleared && blank && img.src.startsWith("blob:") && img.src !== old
       && had.startsWith("blob:") && pimg.src === "";
   }],
+
+  // follow-up (3 Nov, DM 3336): a time on screen for each item
+  ["lengths: a picker per site, the usual time first; a choice sends length ?site= with seconds, the usual one null; a refusal puts it back", TEAM, hub, async (r) => {
+    const four = { sites: ["a", "▶ clip", "b", "▶ loop"], urls: ["https://a.example", "video:clip.mp4", "https://b.example", "video:loop.mp4"],
+      lengths: [{ auto: 60, set: null }, { auto: null, set: 30 }, { auto: 241, set: null }, { auto: 45, set: 0 }] };
+    const ws = await r.live({ kleros1: st("kleros1", four) });
+    const pick = (name) => r.find((n) => n.tag === "select" && n.attrs["aria-label"] === `Time on screen for ${name}`);
+    const groups = (sel) => sel.children.map((g) => [g.attrs.label, g.children.map((o) => `${o.value}=${text(o)}`)]);
+    const [a, clip, b, loop] = ["a", "▶ clip", "b", "▶ loop"].map(pick);
+    const shown = a.value === "" && !has(a, "set") && same(groups(a)[0], ["Usual", ["=1 min"]])
+      && same(groups(a)[1], ["Set from a phone", ["15=15 s", "30=30 s", "45=45 s", "90=1:30", "120=2 min", "180=3 min", "300=5 min", "600=10 min"]])
+      && clip.value === "30" && has(clip, "set") && same(groups(clip)[0], ["Usual", ["=To the end"]])
+      && !groups(clip)[1][1].some((o) => o.startsWith("0="))  // the usual already is
+      && b.value === "" && same(groups(b)[0], ["Usual", ["=4:01"]])
+      && loop.value === "0" && has(loop, "set") && groups(loop)[1][1][0] === "0=To the end" && same(groups(loop)[0], ["Usual", ["=45 s"]])
+      && !r.find((n) => has(n, "lens")).hidden;
+    a.value = "45";
+    a.onchange();
+    const set = r.commands()[0];
+    const after = { ...four, lengths: [{ auto: 60, set: 45 }, ...four.lengths.slice(1)] };
+    ws.push({ type: "result", id: set.id, status: 200, body: st("kleros1", after) });
+    await r.settle();
+    const now = pick("a").value === "45" && has(pick("a"), "set");
+    const clip2 = pick("▶ clip");
+    clip2.value = "";
+    clip2.onchange();
+    const clear = r.commands()[1];
+    ws.push({ type: "result", id: clear.id, status: 409, body: { error: "browser didn't respond" } });
+    await r.settle();
+    return shown && now && same([set.path, set.query, set.body], ["/api/screen/0/length", "site=0", { seconds: 45 }])
+      && same([clear.path, clear.query, clear.body], ["/api/screen/0/length", "site=1", { seconds: null }])
+      && clip2.value === "30" && r.els.toast.textContent === "kleros1: browser didn't respond";
+  }],
+  ["lengths: a switch moves 'On now' without rebuilding the list (an open picker stays open); a new length rebuilds it", TEAM, hub, async (r) => {
+    const two = { sites: ["a", "b"], urls: ["https://a.example", "https://b.example"], lengths: [{ auto: 25, set: null }, { auto: 25, set: null }] };
+    const ws = await r.live({ kleros1: st("kleros1", two) });
+    const pick = (name) => r.find((n) => n.tag === "select" && n.attrs["aria-label"] === `Time on screen for ${name}`);
+    const sel = pick("a"), rowA = sel.parent;
+    const first = rowA.className === "site on" && text(rowA).startsWith("aOn now");
+    ws.push({ type: "state", host: "kleros1", online: true, state: st("kleros1", { ...two, current: 1 }) });
+    await r.settle();
+    const on = r.find((n) => n.className === "site on");
+    const kept = pick("a") === sel && rowA.className === "site" && !text(rowA).includes("On now") && text(on).startsWith("bOn now")
+      && on.children[0].attrs["aria-current"] === "true" && !rowA.children[0].attrs["aria-current"];
+    ws.push({ type: "state", host: "kleros1", online: true, state: st("kleros1", { ...two, current: 1, temp: "x.example" }) });
+    await r.settle();
+    const none = !r.find((n) => n.className === "site on") && pick("a") === sel;
+    ws.push({ type: "state", host: "kleros1", online: true,
+      state: st("kleros1", { ...two, current: 1, lengths: [{ auto: 25, set: 60 }, two.lengths[1]] }) });
+    await r.settle();
+    return first && kept && none && pick("a") !== sel && pick("a").value === "60" && r.find((n) => n.className === "site on") === pick("b").parent;
+  }],
+  ["show now: 'Show now stays' only for a Pi with lengths; sent as seconds and kept on this phone; the bar says when it goes back", TEAM, hub, async (r) => {
+    const ws = await r.live({ kleros1: st("kleros1") });  // a Pi before lengths
+    const row = r.find((n) => has(n, "for"));
+    const sel = r.find((n) => n.tag === "select" && n.attrs["aria-label"] === "How long Show now stays on kleros1");
+    const old = row.hidden && r.find((n) => has(n, "lens")).hidden && !r.find((n) => n.tag === "select" && n !== sel);
+    sel.value = "300";  // (kept from before) but this Pi can't do it
+    r.input("Link for kleros1").value = "kleros.io";
+    r.btn("Show now").onclick();
+    const plain = r.commands()[0];
+    ws.push({ type: "result", id: plain.id, status: 200, body: st("kleros1") });
+    await r.settle();
+    const lengths = [{ auto: 25, set: null }];
+    ws.push({ type: "state", host: "kleros1", online: true, state: st("kleros1", { lengths }) });
+    await r.settle();
+    const shown = !row.hidden && text(row).startsWith("Show now stays")
+      && same(sel.children.map((o) => o.value), ["", "60", "300", "900", "1800", "3600"]) && text(sel.children[0]) === "until you resume";
+    sel.value = "900";
+    sel.onchange();
+    r.input("Link for kleros1").value = "kleros.io";
+    r.btn("Show now").onclick();
+    const timed = r.commands()[1];
+    const bar = r.find((n) => has(n, "bar"));
+    const temp = (s) => { ws.push({ type: "state", host: "kleros1", online: true, state: st("kleros1", { lengths, paused: true, temp: "kleros.io", ...s }) }); };
+    temp({ temp_ends_at: Date.now() / 1000 + 290 });
+    await r.settle();
+    const soon = text(bar) === "Not saved. Back to the rotation in about 5 min. Tap to go back now.";
+    temp({ temp_ends_at: Date.now() / 1000 + 20 });
+    await r.settle();
+    const sooner = text(bar) === "Not saved. Back to the rotation in under a minute. Tap to go back now.";
+    temp({ temp_ends_at: null });
+    await r.settle();
+    const held = text(bar) === "Not saved. Tap to go back to the rotation.";
+    const again = await boot(TEAM, hub, { store: { kioskCode: CODE, kioskShowFor: "900" } });
+    await again.live({ kleros1: st("kleros1", { lengths }) });
+    const bad = await boot(TEAM, hub, { store: { kioskCode: CODE, kioskShowFor: "7" } });
+    await bad.live({ kleros1: st("kleros1", { lengths }) });
+    const value = (x) => x.find((n) => n.tag === "select" && n.attrs["aria-label"] === "How long Show now stays on kleros1").value;
+    return old && same(plain.body, { url: "kleros.io" }) && shown && same(timed.body, { url: "kleros.io", seconds: 900 })
+      && r.store.kioskShowFor === "900" && soon && sooner && held && value(again) === "900" && value(bad) === "";
+  }],
+  ["lengths, Pi mode over HTTP: posts length?site= with the code; a Pi without lengths shows no pickers", PI,
+    { ...pi, "/api/state": [200, JSON_TYPE, { ...st("kleros1", { sites: ["a"], lengths: [{ auto: 25, set: null }] }), peers: [] }] }, async (r) => {
+    const sel = r.find((n) => n.tag === "select" && n.attrs["aria-label"] === "Time on screen for a");
+    sel.value = "60";
+    sel.onchange();
+    await r.settle();
+    const old = await boot(PI, { "/api/state": [200, JSON_TYPE, st("kleros1")] });
+    return same(r.posts, [{ url: "/api/screen/0/length?site=0", body: { seconds: 60 }, code: "saved-code-0123456789" }])
+      && !old.find((n) => n.tag === "select" && n.attrs["aria-label"] === "Time on screen for a");
+  }],
 ];
 
 (async () => {
